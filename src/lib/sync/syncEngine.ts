@@ -9,6 +9,7 @@ const SYNCED_COLLECTIONS = [
   'loans',
   'installments',
   'audit_logs',
+  'plans',
 ] as const;
 
 type SyncedCollection = (typeof SYNCED_COLLECTIONS)[number];
@@ -52,9 +53,22 @@ async function getFirestore() {
   return getFirestore(app);
 }
 
+const OPERATIONAL_COLLECTIONS = new Set<string>([
+  'borrowers',
+  'loans',
+  'installments',
+  'audit_logs',
+]);
+
+async function getCloudDisabledTenants(): Promise<Set<string>> {
+  const tenants = await db.tenants.toArray();
+  return new Set(tenants.filter((t) => t.cloudSyncEnabled === false).map((t) => t.tenantId));
+}
+
 export async function runSync(tenantId?: string): Promise<SyncResult> {
   const fs = await getFirestore();
   const result: SyncResult = { pushed: 0, pulled: 0, errors: [] };
+  const disabled = await getCloudDisabledTenants();
 
   for (const name of SYNCED_COLLECTIONS) {
     try {
@@ -63,7 +77,10 @@ export async function runSync(tenantId?: string): Promise<SyncResult> {
       const all = (await table.toArray()) as Array<BaseRecord & Record<string, unknown>>;
 
       const pending = all.filter(
-        (r) => r.syncStatus !== 'SYNCED' && (!tenantId || r.tenantId === tenantId),
+        (r) =>
+          r.syncStatus !== 'SYNCED' &&
+          (!tenantId || r.tenantId === tenantId) &&
+          !(OPERATIONAL_COLLECTIONS.has(name) && disabled.has(String(r.tenantId ?? ''))),
       );
 
       if (pending.length > 0) {
@@ -86,6 +103,9 @@ export async function runSync(tenantId?: string): Promise<SyncResult> {
       for (const d of snap.docs) {
         const remote = d.data() as (BaseRecord & Record<string, unknown>) | undefined;
         if (!remote || !remote[key]) continue;
+        if (OPERATIONAL_COLLECTIONS.has(name) && disabled.has(String(remote.tenantId ?? ''))) {
+          continue;
+        }
         const local = (await table.get(String(remote[key]))) as
           | (BaseRecord & Record<string, unknown>)
           | undefined;
@@ -121,6 +141,28 @@ export async function runSync(tenantId?: string): Promise<SyncResult> {
   }
 
   return result;
+}
+
+export interface RemoteTenantState {
+  found: boolean;
+  status?: string;
+}
+
+/**
+ * Lee el documento remoto de una organización. Devuelve null si no hay
+ * conexión o Firebase no está configurado (no se debe actuar en ese caso).
+ */
+export async function fetchRemoteTenant(tenantId: string): Promise<RemoteTenantState | null> {
+  try {
+    const fs = await getFirestore();
+    const { doc, getDoc } = await import('firebase/firestore');
+    const snap = await getDoc(doc(fs, 'tenants', tenantId));
+    if (!snap.exists()) return { found: false };
+    const data = snap.data() as Record<string, unknown> | undefined;
+    return { found: true, status: String(data?.status ?? '') };
+  } catch {
+    return null;
+  }
 }
 
 export async function pullBootstrap(): Promise<SyncResult> {

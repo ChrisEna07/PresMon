@@ -45,6 +45,7 @@ export const ACTION_LABELS: Record<AuditAction, string> = {
   TENANT_CREATED: 'Organización creada',
   TENANT_UPDATED: 'Organización actualizada',
   TENANT_DELETED: 'Organización eliminada',
+  PLAN_UPDATED: 'Plan de servicio actualizado',
   DATA_EXPORTED: 'Respaldo exportado',
   SYNC_COMPLETED: 'Sincronización completada',
   SYNC_CONFLICT: 'Conflicto resuelto por sincronización',

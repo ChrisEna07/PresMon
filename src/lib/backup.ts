@@ -1,4 +1,5 @@
 import { db } from '../db/db';
+import type { ServicePlan } from '../db/models';
 
 export interface BackupDump {
   app: 'PresMon';
@@ -10,6 +11,7 @@ export interface BackupDump {
   loans: unknown[];
   installments: unknown[];
   audit_logs: unknown[];
+  plans: ServicePlan[];
 }
 
 const BACKUP_TABLES = [
@@ -19,6 +21,7 @@ const BACKUP_TABLES = [
   'loans',
   'installments',
   'audit_logs',
+  'plans',
 ] as const;
 
 export async function buildBackupDump(): Promise<BackupDump> {
@@ -32,6 +35,7 @@ export async function buildBackupDump(): Promise<BackupDump> {
     loans: await db.loans.toArray(),
     installments: await db.installments.toArray(),
     audit_logs: await db.audit_logs.toArray(),
+    plans: await db.plans.toArray(),
   };
 }
 

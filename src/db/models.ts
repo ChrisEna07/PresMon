@@ -1,5 +1,5 @@
 export type SyncStatus = 'SYNCED' | 'PENDING' | 'CONFLICT';
-export type TenantStatus = 'ACTIVE' | 'SUSPENDED';
+export type TenantStatus = 'ACTIVE' | 'SUSPENDED' | 'DELETED';
 export type UserRole = 'SUPER_ADMIN' | 'TENANT_ADMIN';
 export type DocumentType = 'CC' | 'CE' | 'TI' | 'NIT' | 'PAS';
 export type RiskBadge = 'A' | 'B' | 'C' | 'D';
@@ -21,6 +21,7 @@ export type AuditAction =
   | 'TENANT_CREATED'
   | 'TENANT_UPDATED'
   | 'TENANT_DELETED'
+  | 'PLAN_UPDATED'
   | 'DATA_EXPORTED'
   | 'SYNC_COMPLETED'
   | 'SYNC_CONFLICT';
@@ -37,6 +38,7 @@ export interface Tenant extends BaseRecord {
   adminUid: string;
   status: TenantStatus;
   clientPortalEnabled: boolean;
+  cloudSyncEnabled?: boolean;
 }
 
 export interface UserAccount extends BaseRecord {
@@ -47,6 +49,26 @@ export interface UserAccount extends BaseRecord {
   displayName: string;
   role: UserRole;
   active: boolean;
+}
+
+export type PlanInstallmentStatus = 'PENDING' | 'PAID';
+
+export interface PlanInstallment {
+  installmentId: string;
+  dueDate: string;
+  amount: number;
+  concept: string;
+  status: PlanInstallmentStatus;
+  paidAt?: string;
+}
+
+export interface ServicePlan extends BaseRecord {
+  planId: string;
+  tenantId: string;
+  name: string;
+  cloudServiceIncluded: boolean;
+  notes?: string;
+  installments: PlanInstallment[];
 }
 
 export interface Borrower extends BaseRecord {

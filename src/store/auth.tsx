@@ -9,9 +9,10 @@ import {
   type ReactNode,
 } from 'react';
 import type { UserRole } from '../db/models';
-import { db } from '../db/db';
+import { db, deleteTenantCascade } from '../db/db';
 import { sha256Hex } from '../lib/crypto';
 import { logAudit } from '../lib/auditLogger';
+import { fetchRemoteTenant, isSyncConfigured } from '../lib/sync/syncEngine';
 
 export interface Session {
   userId: string;
@@ -28,7 +29,7 @@ interface AuthContextValue {
   ready: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => void;
-  refreshSessionFlags: () => Promise<'ok' | 'forced-logout'>;
+  refreshSessionFlags: () => Promise<'ok' | 'forced-logout' | 'org-deleted'>;
 }
 
 const SESSION_KEY = 'presmon_session_v1';
@@ -66,8 +67,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let tenantName = 'Plataforma Global';
     let clientPortalEnabled = false;
     if (user.role === 'TENANT_ADMIN') {
+      // Verificación autoritativa contra la nube: si la organización fue
+      // eliminada, no hay forma de entrar y se borra la copia local.
+      if (isSyncConfigured()) {
+        const remote = await fetchRemoteTenant(user.tenantId);
+        if (remote && (!remote.found || remote.status === 'DELETED')) {
+          await deleteTenantCascade(user.tenantId).catch(() => undefined);
+          throw new Error('Esta organización fue eliminada de la plataforma.');
+        }
+      }
       const tenant = await db.tenants.get(user.tenantId);
       if (!tenant) throw new Error('Organización no encontrada.');
+      if (tenant.status === 'DELETED') {
+        await deleteTenantCascade(user.tenantId).catch(() => undefined);
+        throw new Error('Esta organización fue eliminada de la plataforma.');
+      }
       if (tenant.status !== 'ACTIVE')
         throw new Error('Esta organización está suspendida. Contacta al administrador.');
       tenantName = tenant.name;
@@ -105,7 +119,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSession(null);
   }, []);
 
-  const refreshSessionFlags = useCallback(async (): Promise<'ok' | 'forced-logout'> => {
+  const refreshSessionFlags = useCallback(async (): Promise<
+    'ok' | 'forced-logout' | 'org-deleted'
+  > => {
     const current = sessionRef.current;
     if (!current) return 'ok';
     if (current.role !== 'TENANT_ADMIN') return 'ok';
@@ -115,11 +131,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(null);
       return 'forced-logout';
     }
+    // Verificación autoritativa contra la nube (solo actúa si la lectura
+    // tuvo éxito; offline no se toca nada).
+    if (isSyncConfigured()) {
+      const remote = await fetchRemoteTenant(current.tenantId);
+      if (remote && (!remote.found || remote.status === 'DELETED')) {
+        await deleteTenantCascade(current.tenantId).catch(() => undefined);
+        localStorage.removeItem(SESSION_KEY);
+        setSession(null);
+        return 'org-deleted';
+      }
+    }
     const tenant = await db.tenants.get(current.tenantId);
     if (!tenant || tenant.status !== 'ACTIVE') {
+      const deleted = tenant?.status === 'DELETED';
+      if (deleted) await deleteTenantCascade(current.tenantId).catch(() => undefined);
       localStorage.removeItem(SESSION_KEY);
       setSession(null);
-      return 'forced-logout';
+      return deleted ? 'org-deleted' : 'forced-logout';
     }
     const next: Session = {
       ...current,

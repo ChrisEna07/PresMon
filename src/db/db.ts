@@ -5,6 +5,7 @@ import type {
   Installment,
   Loan,
   PdfBlob,
+  ServicePlan,
   Tenant,
   UserAccount,
 } from './models';
@@ -26,6 +27,7 @@ class PresmonDB extends Dexie {
   installments!: Table<Installment, string>;
   audit_logs!: Table<AuditLog, string>;
   pdf_blobs!: Table<PdfBlob, string>;
+  plans!: Table<ServicePlan, string>;
 
   constructor() {
     super('presmon-db');
@@ -44,6 +46,9 @@ class PresmonDB extends Dexie {
         'logId, tenantId, timestamp, action, entityId, syncStatus, [tenantId+timestamp]',
       pdf_blobs: 'blobId, loanId, tenantId',
     });
+    this.version(2).stores({
+      plans: 'planId, tenantId, syncStatus',
+    });
   }
 }
 
@@ -60,6 +65,7 @@ const TENANT_TABLES = [
   'installments',
   'pdf_blobs',
   'audit_logs',
+  'plans',
 ] as const;
 
 const TENANT_KEY_OF: Record<(typeof TENANT_TABLES)[number], string> = {
@@ -69,6 +75,7 @@ const TENANT_KEY_OF: Record<(typeof TENANT_TABLES)[number], string> = {
   installments: 'installmentId',
   pdf_blobs: 'blobId',
   audit_logs: 'logId',
+  plans: 'planId',
 };
 
 export async function deleteTenantCascade(tenantId: string): Promise<{
@@ -83,7 +90,16 @@ export async function deleteTenantCascade(tenantId: string): Promise<{
   }
   await db.transaction(
     'rw',
-    [db.tenants, db.users, db.borrowers, db.loans, db.installments, db.pdf_blobs, db.audit_logs],
+    [
+      db.tenants,
+      db.users,
+      db.borrowers,
+      db.loans,
+      db.installments,
+      db.pdf_blobs,
+      db.audit_logs,
+      db.plans,
+    ],
     async () => {
       await db.tenants.delete(tenantId);
       for (const name of TENANT_TABLES) {

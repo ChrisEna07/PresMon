@@ -94,6 +94,16 @@ export default function SettingsPage() {
 
   async function handleSyncNow() {
     if (!session) return;
+    if (!isSuperAdmin && session.tenantId) {
+      const tenant = await db.tenants.get(session.tenantId);
+      if (tenant?.cloudSyncEnabled === false) {
+        toast(
+          'La sincronización en la nube está desactivada para esta organización. Contacta a ChrizDev.',
+          'warning',
+        );
+        return;
+      }
+    }
     setSyncing(true);
     try {
       if (isSuperAdmin) {

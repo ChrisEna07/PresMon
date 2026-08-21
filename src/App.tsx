@@ -15,6 +15,7 @@ import SimulatorPage from './pages/SimulatorPage';
 import AuditPage from './pages/AuditPage';
 import SettingsPage from './pages/SettingsPage';
 import SuperAdminPage from './pages/SuperAdminPage';
+import SuperPlansPage from './pages/SuperPlansPage';
 import ClientPortalPage from './pages/ClientPortalPage';
 import { seedDatabase } from './db/db';
 import { runMoraEvaluation, startDayWatch } from './lib/moraEngine';
@@ -106,6 +107,14 @@ export default function App() {
                 element={
                   <RequireSuperAdmin>
                     <SuperAdminPage />
+                  </RequireSuperAdmin>
+                }
+              />
+              <Route
+                path="super/plans"
+                element={
+                  <RequireSuperAdmin>
+                    <SuperPlansPage />
                   </RequireSuperAdmin>
                 }
               />

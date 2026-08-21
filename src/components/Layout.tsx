@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
+  AlertTriangle,
   CalendarClock,
   Calculator,
   CloudUpload,
@@ -12,10 +13,13 @@ import {
   Settings,
   ShieldCheck,
   Users,
+  Wallet,
   Wifi,
   WifiOff,
+  X,
 } from 'lucide-react';
 import { db } from '../db/db';
+import type { Tenant } from '../db/models';
 import { useAuth } from '../store/auth';
 import { useOnline } from '../hooks/useOnline';
 import {
@@ -25,7 +29,7 @@ import {
   runSync,
   setLastSync,
 } from '../lib/sync/syncEngine';
-import { cn } from '../lib/format';
+import { cn, addDaysStr, formatCOP, formatDateShort, todayStr } from '../lib/format';
 import { useToast } from './ui/toast';
 
 export default function Layout() {
@@ -47,6 +51,34 @@ export default function Layout() {
     [session?.tenantId],
   );
 
+  const tenantRecord = useLiveQuery<Tenant | undefined>(
+    () => (session?.tenantId ? db.tenants.get(session.tenantId) : Promise.resolve(undefined)),
+    [session?.tenantId],
+  );
+  const cloudDisabled =
+    session?.role === 'TENANT_ADMIN' && tenantRecord?.cloudSyncEnabled === false;
+
+  const duePlanItem = useLiveQuery(
+    async () => {
+      if (!session || session.role !== 'TENANT_ADMIN' || !session.tenantId) return null;
+      const orgPlans = await db.plans.where('tenantId').equals(session.tenantId).toArray();
+      const todayDate = todayStr();
+      const horizon = addDaysStr(todayDate, 7);
+      const pendings = orgPlans
+        .flatMap((p) =>
+          p.installments.map((inst) => ({ ...inst, planName: p.name, tenantRef: p.tenantId })),
+        )
+        .filter((i) => i.status === 'PENDING' && i.dueDate <= horizon)
+        .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+      const first = pendings[0];
+      return first ?? null;
+    },
+    [session?.userId],
+  );
+
+  const [bannerDismissedFor, setBannerDismissedFor] = useState('');
+  const showPlanBanner = !!duePlanItem && bannerDismissedFor !== duePlanItem.installmentId;
+
   useEffect(() => {
     if (!online) return;
     if (!isSyncConfigured() || syncing) return;
@@ -58,6 +90,15 @@ export default function Layout() {
 
   async function enforceSessionGuard(): Promise<boolean> {
     const result = await refreshSessionFlags();
+    if (result === 'org-deleted') {
+      logout();
+      toast(
+        'Esta organización fue eliminada de la plataforma. Los datos locales fueron borrados.',
+        'error',
+      );
+      navigate('/login', { replace: true });
+      return false;
+    }
     if (result === 'forced-logout') {
       logout();
       toast(
@@ -82,6 +123,11 @@ export default function Layout() {
 
   async function handleSync(silent = false) {
     if (!session || syncing) return;
+    if (cloudDisabled) {
+      if (!silent)
+        toast('La sincronización en la nube está desactivada para esta organización.', 'warning');
+      return;
+    }
     if (!isSyncConfigured()) {
       if (!silent) toast('Configura Firebase en Ajustes para sincronizar.', 'info');
       return;
@@ -118,6 +164,7 @@ export default function Layout() {
   ];
   if (session?.role === 'SUPER_ADMIN') {
     navItems.push({ to: '/super-admin', label: 'Super Admin', icon: ShieldCheck });
+    navItems.push({ to: '/super/plans', label: 'Planes', icon: Wallet });
   }
 
   return (
@@ -202,6 +249,33 @@ export default function Layout() {
             </button>
           </div>
         </header>
+
+        {showPlanBanner && duePlanItem && (
+          <div
+            className={cn(
+              'flex flex-wrap items-center gap-x-2 gap-y-1 px-4 py-2.5 text-sm',
+              duePlanItem.dueDate < todayStr()
+                ? 'bg-red-600 text-white'
+                : 'bg-amber-100 text-amber-900',
+            )}
+          >
+            <AlertTriangle size={16} className={duePlanItem.dueDate < todayStr() ? '' : 'text-amber-600'} />
+            <span className="font-bold">
+              {duePlanItem.dueDate < todayStr() ? 'Cuota vencida con ChrizDev:' : 'Recordatorio de pago:'}
+            </span>
+            <span>
+              {duePlanItem.concept} · {formatCOP(duePlanItem.amount)} ·{' '}
+              {formatDateShort(duePlanItem.dueDate)} · plan «{duePlanItem.planName}»
+            </span>
+            <button
+              onClick={() => setBannerDismissedFor(duePlanItem.installmentId)}
+              className="ml-auto cursor-pointer rounded p-1 opacity-70 hover:opacity-100"
+              aria-label="Ocultar aviso"
+            >
+              <X size={15} />
+            </button>
+          </div>
+        )}
 
         <main className="mx-auto max-w-6xl p-4 pb-24 lg:pb-8">
           <Outlet />

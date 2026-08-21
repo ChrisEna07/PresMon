@@ -35,7 +35,10 @@ export default function SuperAdminPage() {
   const [resetTarget, setResetTarget] = useState<Tenant | null>(null);
   const [resetPass, setResetPass] = useState('');
 
-  const tenants = useLiveQuery(() => db.tenants.toArray(), []);
+  const tenants = useLiveQuery(
+    () => db.tenants.where('status').notEqual('DELETED').toArray(),
+    [],
+  );
   const users = useLiveQuery(() => db.users.where('role').equals('TENANT_ADMIN').toArray(), []);
   const loans = useLiveQuery(() => db.loans.toArray(), []);
 
@@ -62,6 +65,7 @@ export default function SuperAdminPage() {
   const [deleteCounts, setDeleteCounts] = useState({ users: 0, borrowers: 0, loans: 0, installments: 0 });
   const [deleting, setDeleting] = useState(false);
   const [portalLinkTarget, setPortalLinkTarget] = useState<Tenant | null>(null);
+  const [createCloud, setCreateCloud] = useState(true);
 
   const portalUrl = typeof window !== 'undefined' ? `${window.location.origin}/portal` : '/portal';
 
@@ -129,16 +133,36 @@ export default function SuperAdminPage() {
     setDeleting(true);
     try {
       const tenantName = deleteTarget.name;
+      // 1) Tumba: la organización queda marcada DELETED y se sube a la nube
+      //    ANTES de purgar datos, para que sus dispositivos lo averigüen.
+      await saveTenant({
+        ...deleteTarget,
+        status: 'DELETED',
+        updatedAt: new Date().toISOString(),
+        syncStatus: 'PENDING',
+      });
+      let pushFailed = false;
+      if (isSyncConfigured()) {
+        try {
+          await runSync();
+        } catch {
+          pushFailed = true;
+        }
+      }
+      // 2) Borrado local en cascada + ids para purgar la nube.
       const { removed, ids } = await deleteTenantCascade(deleteTarget.tenantId);
+      // 3) Purga de datos operativos en la nube. El documento de la
+      //    organización NO se borra: queda como tumba DELETED.
       let purgeFailed = false;
       if (isSyncConfigured()) {
         try {
-          await purgeDocsFromCloud([
-            { collection: 'tenants', ids: [deleteTarget.tenantId] },
-            ...(['users', 'borrowers', 'loans', 'installments', 'audit_logs'] as const)
+          await purgeDocsFromCloud(
+            (
+              ['users', 'borrowers', 'loans', 'installments', 'audit_logs', 'plans'] as const
+            )
               .map((collection) => ({ collection, ids: ids[collection] ?? [] }))
               .filter((entry) => entry.ids.length > 0),
-          ]);
+          );
         } catch {
           purgeFailed = true;
         }
@@ -153,17 +177,49 @@ export default function SuperAdminPage() {
         payloadSnapshot: { nombre: tenantName, eliminados: removed },
       });
       setDeleteTarget(null);
-      toast(
-        purgeFailed
-          ? `«${tenantName}» borrada en este dispositivo. Sin conexión no se pudo purgar la nube: reintenta la eliminación al reconectar.`
-          : `«${tenantName}» eliminada por completo (dispositivo y nube).`,
-        purgeFailed ? 'info' : 'success',
-      );
+      if (!isSyncConfigured() || (!pushFailed && !purgeFailed)) {
+        toast(
+          `«${tenantName}» eliminada. Sus dispositivos serán cerrados y sus datos borrados automáticamente.`,
+          'success',
+        );
+      } else {
+        toast(
+          `«${tenantName}» eliminada en este dispositivo, pero sin conexión no se pudo avisar a la nube. Reconecta y vuelve a intentarlo para cerrar sus dispositivos.`,
+          'info',
+        );
+      }
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Error al eliminar la organización', 'error');
     } finally {
       setDeleting(false);
     }
+  }
+
+  async function toggleCloudSync(tenant: Tenant) {
+    if (!session) return;
+    const next = tenant.cloudSyncEnabled === false;
+    await saveTenant({
+      ...tenant,
+      cloudSyncEnabled: next,
+      updatedAt: new Date().toISOString(),
+      syncStatus: 'PENDING',
+    });
+    await logAudit({
+      tenantId: '',
+      action: 'TENANT_UPDATED',
+      actorId: session.userId,
+      actorName: session.displayName,
+      entityId: tenant.tenantId,
+      entityType: 'tenants',
+      payloadSnapshot: { campo: 'cloudSyncEnabled', valor: next },
+    });
+    toast(
+      next
+        ? `Sincronización en la nube ACTIVADA para «${tenant.name}».`
+        : `Sincronización en la nube DESACTIVADA para «${tenant.name}». Su app será offline pura.`,
+      next ? 'success' : 'warning',
+    );
+    pushToCloud();
   }
 
   async function handleCreateTenant(e: FormEvent) {
@@ -199,6 +255,7 @@ export default function SuperAdminPage() {
       adminUid: adminUserId,
       status: 'ACTIVE',
       clientPortalEnabled: false,
+      cloudSyncEnabled: createCloud,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       syncStatus: 'PENDING',
@@ -210,11 +267,12 @@ export default function SuperAdminPage() {
       actorName: session.displayName,
       entityId: tenantId,
       entityType: 'tenants',
-      payloadSnapshot: { nombre: newName.trim(), admin: uname },
+      payloadSnapshot: { nombre: newName.trim(), admin: uname, cloudSyncEnabled: createCloud },
     });
     setNewName('');
     setNewUsername('');
     setNewPassword('');
+    setCreateCloud(true);
     setCreateOpen(false);
     pushToCloud();
     toast('Organización creada y activada. Sincronizando a la nube…', 'success');
@@ -307,6 +365,7 @@ export default function SuperAdminPage() {
           <TH>Préstamos</TH>
           <TH>Creada</TH>
           <TH>Estado</TH>
+          <TH>Sync nube</TH>
           <TH>ENABLE_CLIENT_PORTAL</TH>
           <TH className="text-right">Acciones</TH>
         </THead>
@@ -331,6 +390,19 @@ export default function SuperAdminPage() {
                   </Badge>
                 </div>
               </TD>
+              <TD>
+                <div className="flex items-center gap-2">
+                  <Switch
+                    checked={t.cloudSyncEnabled !== false}
+                    onChange={() => void toggleCloudSync(t)}
+                    label="Sync nube"
+                  />
+                  <Badge variant={t.cloudSyncEnabled !== false ? 'success' : 'muted'}>
+                    {t.cloudSyncEnabled !== false ? 'CLOUD' : 'OFFLINE'}
+                  </Badge>
+                </div>
+              </TD>
+
               <TD>
                 <div className="flex items-center gap-2">
                   <Switch
@@ -402,6 +474,15 @@ export default function SuperAdminPage() {
           <p className="text-[11px] text-slate-400">
             El portal de clientes se crea DESHABILITADO por defecto. Actívalo cuando lo requieras.
           </p>
+          <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={createCloud}
+              onChange={(e) => setCreateCloud(e.target.checked)}
+              className="h-4 w-4 accent-emerald-600"
+            />
+            Incluye servicios de nube (respaldo y sincronización multi-dispositivo)
+          </label>
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>
               Cancelar
