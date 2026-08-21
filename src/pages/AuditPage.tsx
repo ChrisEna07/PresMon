@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
   AlertTriangle,
+  Building2,
   FileDown,
   FileSpreadsheet,
   HandCoins,
@@ -10,7 +11,7 @@ import {
   ShieldCheck,
   UserRound,
 } from 'lucide-react';
-import type { AuditLog } from '../db/models';
+import type { AuditLog, Tenant } from '../db/models';
 import { db } from '../db/db';
 import { useAuth } from '../store/auth';
 import { ACTION_LABELS, AUDIT_FILTERS } from '../lib/auditLogger';
@@ -32,37 +33,61 @@ const ACTION_ICONS: Record<string, typeof ScrollText> = {
   AUTH_LOGIN: UserRound,
 };
 
+const PLATFORM_KEY = '__platform__';
+
 export default function AuditPage() {
   const { session } = useAuth();
   const { toast } = useToast();
-  const tenantId = session?.tenantId ?? '';
+  const isSuper = session?.role === 'SUPER_ADMIN';
+  const tenantScope = isSuper ? null : (session?.tenantId ?? '');
   const [filter, setFilter] = useState('all');
+  const [orgFilter, setOrgFilter] = useState('all');
   const [encryptOpen, setEncryptOpen] = useState(false);
   const [passphrase, setPassphrase] = useState('');
 
+  const tenantsList = useLiveQuery(async () => db.tenants.toArray() as Promise<Tenant[]>, []);
+  const tenantNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    (tenantsList ?? []).forEach((t) => map.set(t.tenantId, t.name));
+    return map;
+  }, [tenantsList]);
+
   const logs = useLiveQuery(
     async () => {
-      if (!tenantId) return [] as AuditLog[];
-      const rows = await db.audit_logs.where('tenantId').equals(tenantId).toArray();
-      return rows.sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, 300);
+      if (!session) return [] as AuditLog[];
+      if (tenantScope !== null && tenantScope !== '') {
+        const rows = await db.audit_logs.where('tenantId').equals(tenantScope).toArray();
+        return rows.sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, 300);
+      }
+      if (isSuper) {
+        const rows = await db.audit_logs.toArray();
+        return rows.sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, 600);
+      }
+      return [] as AuditLog[];
     },
-    [tenantId],
+    [session?.userId, session?.tenantId],
   );
 
+  const baseRows = useMemo(() => {
+    const rows = logs ?? [];
+    if (!isSuper || orgFilter === 'all') return rows;
+    if (orgFilter === PLATFORM_KEY) return rows.filter((l) => !l.tenantId);
+    return rows.filter((l) => l.tenantId === orgFilter);
+  }, [logs, isSuper, orgFilter]);
+
   const counts = useMemo(() => {
-    const c: Record<string, number> = { all: (logs ?? []).length };
+    const c: Record<string, number> = { all: baseRows.length };
     for (const f of AUDIT_FILTERS) {
-      if (f.key !== 'all')
-        c[f.key] = (logs ?? []).filter((l) => f.actions.includes(l.action)).length;
+      if (f.key !== 'all') c[f.key] = baseRows.filter((l) => f.actions.includes(l.action)).length;
     }
     return c;
-  }, [logs]);
+  }, [baseRows]);
 
   const filtered = useMemo(() => {
     const f = AUDIT_FILTERS.find((x) => x.key === filter);
-    if (!f || f.key === 'all') return logs ?? [];
-    return (logs ?? []).filter((l) => f.actions.includes(l.action));
-  }, [logs, filter]);
+    if (!f || f.key === 'all') return baseRows;
+    return baseRows.filter((l) => f.actions.includes(l.action));
+  }, [baseRows, filter]);
 
   function describePayload(log: AuditLog): string {
     try {
@@ -73,6 +98,10 @@ export default function AuditPage() {
         return `Préstamo de ${formatCOP(Number(parsed.monto))} a ${parsed.cuotas} cuotas`;
       if (log.action === 'LATE_FEE_TRIGGERED' && 'recargoAcumulado' in parsed)
         return `Recargo acumulado ${formatCOP(Number(parsed.recargoAcumulado))} · ${parsed.cuotasVencidas} cuota(s) vencida(s)`;
+      if (log.action === 'SYNC_CONFLICT' && 'versionLocalPerdida' in parsed)
+        return 'Conflicto resuelto: ganó la versión del servidor (LWW)';
+      if ((log.action === 'TENANT_CREATED' || log.action === 'TENANT_DELETED') && 'nombre' in parsed)
+        return `Organización «${String(parsed.nombre)}»`;
       return Object.entries(parsed)
         .slice(0, 3)
         .map(([k, v]) => `${k}: ${String(v).slice(0, 40)}`)
@@ -83,9 +112,10 @@ export default function AuditPage() {
   }
 
   function exportCSV() {
-    const header = ['fecha', 'accion', 'actor', 'entidad', 'detalle'];
+    const header = ['fecha', 'organizacion', 'accion', 'actor', 'entidad', 'detalle'];
     const lines = filtered.map((l) => [
       l.timestamp,
+      `"${(tenantNameById.get(l.tenantId) ?? 'Plataforma').replace(/"/g, "'")}"`,
       l.action,
       l.actorName,
       l.entityId.slice(0, 12),
@@ -120,7 +150,11 @@ export default function AuditPage() {
     <div>
       <PageHeader
         title="Auditoría"
-        description="Registro inmutable de actividades · guardado local"
+        description={
+          isSuper
+            ? 'Registro global: todas las organizaciones y la plataforma'
+            : 'Registro inmutable de las actividades de tu organización'
+        }
         actions={
           <>
             <Button variant="outline" size="sm" onClick={exportCSV}>
@@ -132,6 +166,30 @@ export default function AuditPage() {
           </>
         }
       />
+
+      {isSuper && (
+        <div className="mb-4 flex items-center gap-2">
+          <Building2 size={15} className="text-slate-400" />
+          <select
+            value={orgFilter}
+            onChange={(e) => setOrgFilter(e.target.value)}
+            className="h-9 w-full max-w-xs cursor-pointer rounded-lg border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 outline-none focus:border-emerald-500"
+          >
+            <option value="all">Todas las organizaciones y plataforma</option>
+            <option value={PLATFORM_KEY}>Plataforma (acciones de Super Admin)</option>
+            {(tenantsList ?? []).map((t) => (
+              <option key={t.tenantId} value={t.tenantId}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+          {orgFilter !== 'all' && (
+            <span className="text-[11px] text-slate-400">
+              {baseRows.length} registro(s) en este ámbito
+            </span>
+          )}
+        </div>
+      )}
 
       <Tabs
         className="mb-4"
@@ -161,8 +219,13 @@ export default function AuditPage() {
                     <p className="text-sm font-semibold text-slate-800">{ACTION_LABELS[log.action]}</p>
                     <span className="text-[11px] text-slate-400">{formatDateTime(log.timestamp)}</span>
                   </div>
-                  <p className="mt-0.5 text-xs text-slate-500">
+                  <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
                     {log.actorName}
+                    {isSuper && (
+                      <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
+                        {tenantNameById.get(log.tenantId) ?? 'Plataforma'}
+                      </span>
+                    )}
                     {log.entityId && ` · ref ${log.entityId.slice(0, 8)}`}
                   </p>
                   <p className="mt-1 text-xs text-slate-600">{describePayload(log)}</p>
