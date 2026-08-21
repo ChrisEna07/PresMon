@@ -1,0 +1,13 @@
+{
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
+  "headers": [
+    {
+      "source": "/sw.js",
+      "Cache-Control": "public, max-age=0, must-revalidate"
+    },
+    {
+      "source": "/manifest.webmanifest",
+      "Cache-Control": "public, max-age=0, must-revalidate"
+    }
+  ]
+}
