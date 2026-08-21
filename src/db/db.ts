@@ -16,6 +16,7 @@ import {
   round2,
 } from '../lib/financialCalculations';
 import { todayStr } from '../lib/format';
+import { loadFirebaseConfig } from '../lib/sync/firebaseConfig';
 
 class PresmonDB extends Dexie {
   tenants!: Table<Tenant, string>;
@@ -98,6 +99,10 @@ function baseFields() {
 const SEED_FLAG = 'presmon_seeded_v1';
 
 export async function seedDatabase(): Promise<void> {
+  if (loadFirebaseConfig()) {
+    localStorage.setItem(SEED_FLAG, 'done');
+    return;
+  }
   if (localStorage.getItem(SEED_FLAG) === 'done') return;
   if ((await db.tenants.count()) > 0 || (await db.users.count()) > 0) {
     localStorage.setItem(SEED_FLAG, 'done');

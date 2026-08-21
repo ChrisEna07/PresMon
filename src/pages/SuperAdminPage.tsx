@@ -16,6 +16,13 @@ import { Input, Label } from '../components/ui/input';
 import { Switch } from '../components/ui/switch';
 import { TBody, TD, TH, THead, TR, TableWrap } from '../components/ui/table';
 import { useToast } from '../components/ui/toast';
+import { runSync } from '../lib/sync/syncEngine';
+
+function pushToCloud(): void {
+  void runSync().catch(() => {
+    /* reintento automático al detectar conexión */
+  });
+}
 
 export default function SuperAdminPage() {
   const { session } = useAuth();
@@ -97,7 +104,8 @@ export default function SuperAdminPage() {
     setNewUsername('');
     setNewPassword('');
     setCreateOpen(false);
-    toast('Organización creada y activada.', 'success');
+    pushToCloud();
+    toast('Organización creada y activada. Sincronizando a la nube…', 'success');
   }
 
   async function toggleStatus(tenant: Tenant) {
@@ -114,6 +122,7 @@ export default function SuperAdminPage() {
       payloadSnapshot: { campo: 'status', valor: next },
     });
     toast(next === 'ACTIVE' ? 'Organización activada.' : 'Organización suspendida.', 'success');
+    pushToCloud();
   }
 
   async function togglePortal(tenant: Tenant) {
@@ -135,6 +144,7 @@ export default function SuperAdminPage() {
         : 'Portal de clientes deshabilitado.',
       'success',
     );
+    pushToCloud();
   }
 
   async function handleResetPassword() {
@@ -154,7 +164,8 @@ export default function SuperAdminPage() {
     await db.users.put(user);
     setResetTarget(null);
     setResetPass('');
-    toast('Contraseña del administrador restablecida.', 'success');
+    pushToCloud();
+    toast('Contraseña del administrador restablecida. Sincronizando a la nube…', 'success');
   }
 
   return (

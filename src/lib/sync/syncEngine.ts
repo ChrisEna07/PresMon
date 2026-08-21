@@ -116,6 +116,35 @@ export async function runSync(tenantId?: string): Promise<SyncResult> {
   return result;
 }
 
+export async function pullBootstrap(): Promise<SyncResult> {
+  const fs = await getFirestore();
+  const result: SyncResult = { pushed: 0, pulled: 0, errors: [] };
+  const { collection, getDocs } = await import('firebase/firestore');
+
+  for (const name of SYNCED_COLLECTIONS) {
+    try {
+      const table = db.table(name);
+      const key = idKeyOf(name);
+      const snap = await getDocs(collection(fs, name));
+      for (const d of snap.docs) {
+        const remote = d.data() as (BaseRecord & Record<string, unknown>) | undefined;
+        if (!remote || !remote[key]) continue;
+        const local = (await table.get(String(remote[key]))) as
+          | (BaseRecord & Record<string, unknown>)
+          | undefined;
+        if (!local || String(remote.updatedAt ?? '') > String(local.updatedAt ?? '')) {
+          await table.put({ ...remote, syncStatus: 'SYNCED' });
+          result.pulled += 1;
+        }
+      }
+    } catch (err) {
+      result.errors.push(`${name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  return result;
+}
+
 export function getLastSync(tenantId: string): number {
   const raw = localStorage.getItem(`presmon_last_sync_${tenantId}`);
   return raw ? Number(raw) : 0;

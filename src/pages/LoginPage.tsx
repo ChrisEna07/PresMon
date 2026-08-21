@@ -1,11 +1,15 @@
-import { useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { LogIn, ShieldCheck } from 'lucide-react';
+import { CloudOff, LogIn, RefreshCw, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../store/auth';
+import { db } from '../db/db';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import { Input, Label } from '../components/ui/input';
 import { cn } from '../lib/format';
+import { isSyncConfigured, pullBootstrap } from '../lib/sync/syncEngine';
+
+type BootState = 'checking' | 'local' | 'syncing' | 'empty-cloud' | 'ready';
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -15,6 +19,29 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [boot, setBoot] = useState<BootState>('checking');
+  const cloudMode = isSyncConfigured();
+
+  const bootstrap = useCallback(async () => {
+    setBoot('syncing');
+    try {
+      await pullBootstrap();
+    } catch {
+      /* sin conexión: se conserva lo local */
+    }
+    const count = await db.users.count().catch(() => 0);
+    setBoot(count > 0 ? 'ready' : 'empty-cloud');
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      if (!cloudMode) {
+        setBoot('local');
+        return;
+      }
+      await bootstrap();
+    })();
+  }, [cloudMode, bootstrap]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -24,7 +51,18 @@ export default function LoginPage() {
       await login(username, password);
       navigate('/', { replace: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error al iniciar sesión');
+      let message = err instanceof Error ? err.message : 'Error al iniciar sesión';
+      if (cloudMode && message.includes('Credenciales')) {
+        try {
+          await pullBootstrap();
+          await login(username, password);
+          navigate('/', { replace: true });
+          return;
+        } catch (retryErr) {
+          message = retryErr instanceof Error ? retryErr.message : message;
+        }
+      }
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -47,6 +85,27 @@ export default function LoginPage() {
               <p className="mb-4 inline-flex items-center gap-1.5 rounded-full bg-slate-900 px-3 py-1 text-[11px] font-semibold text-white">
                 <ShieldCheck size={12} /> Modo Super Admin
               </p>
+            )}
+            {cloudMode && boot === 'syncing' && (
+              <p className="mb-4 flex items-center gap-2 rounded-lg bg-sky-50 px-3 py-2 text-xs font-medium text-sky-700">
+                <RefreshCw size={12} className="animate-spin" />
+                Descargando cuentas desde la nube…
+              </p>
+            )}
+            {cloudMode && boot === 'empty-cloud' && (
+              <div className="mb-4 flex items-center justify-between gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
+                <span className="inline-flex items-center gap-1.5">
+                  <CloudOff size={12} />
+                  No hay cuentas en la nube todavía
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void bootstrap()}
+                  className="cursor-pointer rounded-md bg-amber-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-amber-700"
+                >
+                  Reintentar
+                </button>
+              </div>
             )}
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
