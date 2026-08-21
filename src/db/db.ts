@@ -53,6 +53,51 @@ export function nowISO(): string {
   return new Date().toISOString();
 }
 
+const TENANT_TABLES = [
+  'users',
+  'borrowers',
+  'loans',
+  'installments',
+  'pdf_blobs',
+  'audit_logs',
+] as const;
+
+const TENANT_KEY_OF: Record<(typeof TENANT_TABLES)[number], string> = {
+  users: 'userId',
+  borrowers: 'borrowerId',
+  loans: 'loanId',
+  installments: 'installmentId',
+  pdf_blobs: 'blobId',
+  audit_logs: 'logId',
+};
+
+export async function deleteTenantCascade(tenantId: string): Promise<{
+  removed: Record<string, number>;
+  ids: Record<string, string[]>;
+}> {
+  const ids: Record<string, string[]> = {};
+  for (const name of TENANT_TABLES) {
+    const rows = await db.table(name).where('tenantId').equals(tenantId).toArray();
+    const key = TENANT_KEY_OF[name];
+    ids[name] = rows.map((r) => String((r as Record<string, unknown>)[key]));
+  }
+  await db.transaction(
+    'rw',
+    [db.tenants, db.users, db.borrowers, db.loans, db.installments, db.pdf_blobs, db.audit_logs],
+    async () => {
+      await db.tenants.delete(tenantId);
+      for (const name of TENANT_TABLES) {
+        await db.table(name).where('tenantId').equals(tenantId).delete();
+      }
+    },
+  );
+  const removed: Record<string, number> = {};
+  for (const name of TENANT_TABLES) {
+    removed[name] = ids[name].length;
+  }
+  return { removed, ids };
+}
+
 export function stamp<T extends { updatedAt: string; syncStatus: string }>(obj: T): T {
   obj.updatedAt = nowISO();
   obj.syncStatus = 'PENDING';
@@ -123,7 +168,7 @@ export async function seedDatabase(): Promise<void> {
     role: 'SUPER_ADMIN',
     active: true,
     ...baseFields(),
-    syncStatus: 'SYNCED' as const,
+    syncStatus: 'PENDING' as const,
   };
 
   const adminUser: UserAccount = {

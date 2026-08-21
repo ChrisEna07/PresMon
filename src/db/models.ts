@@ -20,6 +20,7 @@ export type AuditAction =
   | 'LOAN_CANCELLED'
   | 'TENANT_CREATED'
   | 'TENANT_UPDATED'
+  | 'TENANT_DELETED'
   | 'DATA_EXPORTED'
   | 'SYNC_COMPLETED'
   | 'SYNC_CONFLICT';

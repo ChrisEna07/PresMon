@@ -1,5 +1,5 @@
 import type { BaseRecord } from '../../db/models';
-import { db } from '../../db/db';
+import { db, nowISO } from '../../db/db';
 import { loadFirebaseConfig } from './firebaseConfig';
 
 const SYNCED_COLLECTIONS = [
@@ -57,7 +57,6 @@ export async function runSync(tenantId?: string): Promise<SyncResult> {
   const result: SyncResult = { pushed: 0, pulled: 0, errors: [] };
 
   for (const name of SYNCED_COLLECTIONS) {
-    if (tenantId && (name === 'tenants' || name === 'users')) continue;
     try {
       const table = db.table(name);
       const key = idKeyOf(name);
@@ -151,6 +150,43 @@ export async function pullBootstrap(): Promise<SyncResult> {
   }
 
   return result;
+}
+
+export async function purgeDocsFromCloud(
+  entries: Array<{ collection: string; ids: string[] }>,
+): Promise<number> {
+  const fs = await getFirestore();
+  const { doc, deleteDoc, writeBatch } = await import('firebase/firestore');
+  let purged = 0;
+  for (const { collection: name, ids } of entries) {
+    for (let i = 0; i < ids.length; i += 400) {
+      const chunk = ids.slice(i, i + 400);
+      if (chunk.length <= 8) {
+        for (const id of chunk) {
+          await deleteDoc(doc(fs, name, id));
+          purged += 1;
+        }
+      } else {
+        const batch = writeBatch(fs);
+        for (const id of chunk) batch.delete(doc(fs, name, id));
+        await batch.commit();
+        purged += chunk.length;
+      }
+    }
+  }
+  return purged;
+}
+
+export async function ensureSuperAdminSynced(userId: string): Promise<void> {
+  try {
+    const user = await db.users.get(userId);
+    if (!user || user.role !== 'SUPER_ADMIN') return;
+    if (user.syncStatus === 'SYNCED') {
+      await db.users.put({ ...user, syncStatus: 'PENDING', updatedAt: nowISO() });
+    }
+  } catch {
+    /* sin impacto local */
+  }
 }
 
 export function getLastSync(tenantId: string): number {

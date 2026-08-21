@@ -28,7 +28,7 @@ interface AuthContextValue {
   ready: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => void;
-  refreshSessionFlags: () => Promise<void>;
+  refreshSessionFlags: () => Promise<'ok' | 'forced-logout'>;
 }
 
 const SESSION_KEY = 'presmon_session_v1';
@@ -105,18 +105,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSession(null);
   }, []);
 
-  const refreshSessionFlags = useCallback(async () => {
+  const refreshSessionFlags = useCallback(async (): Promise<'ok' | 'forced-logout'> => {
     const current = sessionRef.current;
-    if (!current || current.role !== 'TENANT_ADMIN') return;
-    const t = await db.tenants.get(current.tenantId);
-    if (!t) return;
+    if (!current) return 'ok';
+    if (current.role !== 'TENANT_ADMIN') return 'ok';
+    const user = await db.users.get(current.userId);
+    if (!user || !user.active || user.tenantId !== current.tenantId) {
+      localStorage.removeItem(SESSION_KEY);
+      setSession(null);
+      return 'forced-logout';
+    }
+    const tenant = await db.tenants.get(current.tenantId);
+    if (!tenant || tenant.status !== 'ACTIVE') {
+      localStorage.removeItem(SESSION_KEY);
+      setSession(null);
+      return 'forced-logout';
+    }
     const next: Session = {
       ...current,
-      tenantName: t.name,
-      clientPortalEnabled: t.clientPortalEnabled,
+      username: user.username,
+      displayName: user.displayName,
+      tenantName: tenant.name,
+      clientPortalEnabled: tenant.clientPortalEnabled,
     };
     localStorage.setItem(SESSION_KEY, JSON.stringify(next));
     setSession(next);
+    return 'ok';
   }, []);
 
   const value = useMemo(

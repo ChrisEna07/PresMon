@@ -44,6 +44,7 @@ export const ACTION_LABELS: Record<AuditAction, string> = {
   LOAN_CANCELLED: 'Préstamo cancelado',
   TENANT_CREATED: 'Organización creada',
   TENANT_UPDATED: 'Organización actualizada',
+  TENANT_DELETED: 'Organización eliminada',
   DATA_EXPORTED: 'Respaldo exportado',
   SYNC_COMPLETED: 'Sincronización completada',
   SYNC_CONFLICT: 'Conflicto resuelto por sincronización',

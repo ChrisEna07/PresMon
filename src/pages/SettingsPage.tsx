@@ -18,7 +18,14 @@ import {
   saveFirebaseConfig,
   type FirebaseConfig,
 } from '../lib/sync/firebaseConfig';
-import { friendlySyncError, getLastSync, runSync, setLastSync } from '../lib/sync/syncEngine';
+import {
+  ensureSuperAdminSynced,
+  friendlySyncError,
+  getLastSync,
+  runSync,
+  setLastSync,
+} from '../lib/sync/syncEngine';
+import { exportBackup, importBackup } from '../lib/backup';
 import { sha256Hex, readFileAsText, downloadBlob } from '../lib/crypto';
 import { logAudit } from '../lib/auditLogger';
 import { formatDateTime } from '../lib/format';
@@ -89,6 +96,9 @@ export default function SettingsPage() {
     if (!session) return;
     setSyncing(true);
     try {
+      if (isSuperAdmin) {
+        await ensureSuperAdminSynced(session.userId);
+      }
       const result = await runSync(isSuperAdmin ? undefined : session.tenantId);
       setLastSync(session.tenantId || 'global');
       setLastSyncAt(Date.now());
@@ -139,27 +149,7 @@ export default function SettingsPage() {
   async function handleExportAll() {
     if (!session) return;
     const tenantId = session.tenantId;
-    const dump = {
-      app: 'PresMon',
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      tenants: isSuperAdmin ? await db.tenants.toArray() : [],
-      users: isSuperAdmin
-        ? (await db.users.toArray()).map((u) => ({ ...u, passHash: '***' }))
-        : [],
-      borrowers: tenantId ? await db.borrowers.where('tenantId').equals(tenantId).toArray() : [],
-      loans: tenantId ? await db.loans.where('tenantId').equals(tenantId).toArray() : [],
-      installments: tenantId
-        ? await db.installments.where('tenantId').equals(tenantId).toArray()
-        : [],
-      audit_logs: tenantId
-        ? await db.audit_logs.where('tenantId').equals(tenantId).toArray()
-        : [],
-    };
-    downloadBlob(
-      new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' }),
-      `presmon-respaldo-${new Date().toISOString().slice(0, 10)}.json`,
-    );
+    await exportBackup();
     await logAudit({
       tenantId,
       action: 'DATA_EXPORTED',
@@ -167,28 +157,18 @@ export default function SettingsPage() {
       actorName: session.displayName,
       payloadSnapshot: { tipo: 'respaldo-completo-json' },
     });
-    toast('Respaldo descargado.', 'success');
+    toast('Respaldo descargado. Incluye cuentas y contraseñas cifradas: guárdalo seguro.', 'success');
   }
 
   async function handleImportAll(file: File) {
     try {
-      const text = await readFileAsText(file);
-      const dump = JSON.parse(text) as Record<string, unknown[]>;
-      let count = 0;
-      for (const table of ['tenants', 'users', 'borrowers', 'loans', 'installments', 'audit_logs']) {
-        const rows = dump[table];
-        if (!Array.isArray(rows)) continue;
-        const stamped = rows.map((r) => ({
-          ...(r as object),
-          updatedAt: new Date().toISOString(),
-          syncStatus: 'PENDING',
-        })) as never[];
-        await db.table(table).bulkPut(stamped);
-        count += rows.length;
-      }
-      toast(`Respaldo importado: ${count} registros marcados para sincronizar.`, 'success');
-    } catch {
-      toast('Archivo de respaldo inválido.', 'error');
+      const count = await importBackup(file);
+      toast(
+        `Respaldo importado: ${count} registros restaurados y marcados para sincronizar.`,
+        'success',
+      );
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Archivo de respaldo inválido.', 'error');
     }
   }
 
@@ -350,10 +330,12 @@ export default function SettingsPage() {
       <Card className="mb-4">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <DatabaseBackup size={17} /> Respaldo local (inyección de datos)
+            <DatabaseBackup size={17} /> Respaldos de datos
           </CardTitle>
           <CardDescription>
-            Exporta todos los datos a JSON o restaura/hidrata la base local desde un volcado.
+            Exporta un respaldo completo en JSON (incluye usuarios y contraseñas cifradas para
+            restaurar el acceso) o restaura la base local desde un archivo. Guárdalo en un lugar
+            seguro.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap gap-2">

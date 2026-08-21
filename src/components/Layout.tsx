@@ -18,12 +18,18 @@ import {
 import { db } from '../db/db';
 import { useAuth } from '../store/auth';
 import { useOnline } from '../hooks/useOnline';
-import { friendlySyncError, isSyncConfigured, runSync, setLastSync } from '../lib/sync/syncEngine';
+import {
+  ensureSuperAdminSynced,
+  friendlySyncError,
+  isSyncConfigured,
+  runSync,
+  setLastSync,
+} from '../lib/sync/syncEngine';
 import { cn } from '../lib/format';
 import { useToast } from './ui/toast';
 
 export default function Layout() {
-  const { session, logout } = useAuth();
+  const { session, logout, refreshSessionFlags } = useAuth();
   const online = useOnline();
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -50,6 +56,30 @@ export default function Layout() {
     return () => window.clearTimeout(t);
   }, [online]);
 
+  async function enforceSessionGuard(): Promise<boolean> {
+    const result = await refreshSessionFlags();
+    if (result === 'forced-logout') {
+      logout();
+      toast(
+        'Tu sesión fue cerrada: la organización o la cuenta ya no están activas.',
+        'error',
+      );
+      navigate('/login', { replace: true });
+      return false;
+    }
+    return true;
+  }
+
+  useEffect(() => {
+    if (!session) return;
+    void enforceSessionGuard();
+    const id = window.setInterval(() => {
+      void enforceSessionGuard();
+    }, 30000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.userId, session?.tenantId]);
+
   async function handleSync(silent = false) {
     if (!session || syncing) return;
     if (!isSyncConfigured()) {
@@ -58,8 +88,13 @@ export default function Layout() {
     }
     setSyncing(true);
     try {
+      if (session.role === 'SUPER_ADMIN') {
+        await ensureSuperAdminSynced(session.userId);
+      }
       const result = await runSync(session.role === 'SUPER_ADMIN' ? undefined : session.tenantId);
       setLastSync(session.tenantId || 'global');
+      const guardOk = await enforceSessionGuard();
+      if (!guardOk) return;
       if (result.errors.length > 0) {
         toast(`Sincronización con errores: ${friendlySyncError(result.errors[0])}`, 'error');
       } else if (!silent) {

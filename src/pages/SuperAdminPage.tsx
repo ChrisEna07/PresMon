@@ -1,8 +1,8 @@
 import { useMemo, useState, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Building2, Globe, KeyRound, Plus, ShieldCheck } from 'lucide-react';
+import { Building2, Globe, KeyRound, Pencil, Plus, ShieldCheck, Trash2 } from 'lucide-react';
 import type { Tenant } from '../db/models';
-import { db, saveTenant, saveUser } from '../db/db';
+import { db, deleteTenantCascade, saveTenant, saveUser } from '../db/db';
 import { useAuth } from '../store/auth';
 import { sha256Hex } from '../lib/crypto';
 import { logAudit } from '../lib/auditLogger';
@@ -16,7 +16,8 @@ import { Input, Label } from '../components/ui/input';
 import { Switch } from '../components/ui/switch';
 import { TBody, TD, TH, THead, TR, TableWrap } from '../components/ui/table';
 import { useToast } from '../components/ui/toast';
-import { runSync } from '../lib/sync/syncEngine';
+import { isSyncConfigured, purgeDocsFromCloud, runSync } from '../lib/sync/syncEngine';
+import { exportBackup } from '../lib/backup';
 
 function pushToCloud(): void {
   void runSync().catch(() => {
@@ -53,6 +54,98 @@ export default function SuperAdminPage() {
     (users ?? []).forEach((u) => map.set(u.tenantId, u.username));
     return map;
   }, [users]);
+
+  const [editTarget, setEditTarget] = useState<Tenant | null>(null);
+  const [editName, setEditName] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<Tenant | null>(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [deleteCounts, setDeleteCounts] = useState({ users: 0, borrowers: 0, loans: 0, installments: 0 });
+  const [deleting, setDeleting] = useState(false);
+
+  async function openDeleteDialog(tenant: Tenant) {
+    setDeleteTarget(tenant);
+    setDeleteConfirmText('');
+    const [users, borrowers, loans, installments] = await Promise.all([
+      db.users.where('tenantId').equals(tenant.tenantId).count(),
+      db.borrowers.where('tenantId').equals(tenant.tenantId).count(),
+      db.loans.where('tenantId').equals(tenant.tenantId).count(),
+      db.installments.where('tenantId').equals(tenant.tenantId).count(),
+    ]);
+    setDeleteCounts({ users, borrowers, loans, installments });
+  }
+
+  async function handleEditSave(e: FormEvent) {
+    e.preventDefault();
+    if (!session || !editTarget) return;
+    if (!editName.trim()) {
+      toast('El nombre no puede quedar vacío.', 'error');
+      return;
+    }
+    await saveTenant({
+      ...editTarget,
+      name: editName.trim(),
+      updatedAt: new Date().toISOString(),
+      syncStatus: 'PENDING',
+    });
+    await logAudit({
+      tenantId: '',
+      action: 'TENANT_UPDATED',
+      actorId: session.userId,
+      actorName: session.displayName,
+      entityId: editTarget.tenantId,
+      entityType: 'tenants',
+      payloadSnapshot: { campo: 'name', valor: editName.trim(), anterior: editTarget.name },
+    });
+    setEditTarget(null);
+    pushToCloud();
+    toast('Organización actualizada. Sincronizando a la nube…', 'success');
+  }
+
+  async function handleDeleteTenant() {
+    if (!session || !deleteTarget) return;
+    if (deleteConfirmText.trim() !== deleteTarget.name.trim()) {
+      toast('El texto de confirmación no coincide con el nombre.', 'error');
+      return;
+    }
+    setDeleting(true);
+    try {
+      const tenantName = deleteTarget.name;
+      const { removed, ids } = await deleteTenantCascade(deleteTarget.tenantId);
+      let purgeFailed = false;
+      if (isSyncConfigured()) {
+        try {
+          await purgeDocsFromCloud([
+            { collection: 'tenants', ids: [deleteTarget.tenantId] },
+            ...(['users', 'borrowers', 'loans', 'installments', 'audit_logs'] as const)
+              .map((collection) => ({ collection, ids: ids[collection] ?? [] }))
+              .filter((entry) => entry.ids.length > 0),
+          ]);
+        } catch {
+          purgeFailed = true;
+        }
+      }
+      await logAudit({
+        tenantId: '',
+        action: 'TENANT_DELETED',
+        actorId: session.userId,
+        actorName: session.displayName,
+        entityId: deleteTarget.tenantId,
+        entityType: 'tenants',
+        payloadSnapshot: { nombre: tenantName, eliminados: removed },
+      });
+      setDeleteTarget(null);
+      toast(
+        purgeFailed
+          ? `«${tenantName}» borrada en este dispositivo. Sin conexión no se pudo purgar la nube: reintenta la eliminación al reconectar.`
+          : `«${tenantName}» eliminada por completo (dispositivo y nube).`,
+        purgeFailed ? 'info' : 'success',
+      );
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Error al eliminar la organización', 'error');
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   async function handleCreateTenant(e: FormEvent) {
     e.preventDefault();
@@ -232,9 +325,29 @@ export default function SuperAdminPage() {
                 </div>
               </TD>
               <TD className="text-right">
-                <Button variant="ghost" size="sm" onClick={() => setResetTarget(t)}>
-                  <KeyRound size={13} /> Reset pass
-                </Button>
+                <div className="flex justify-end gap-1">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setEditTarget(t);
+                      setEditName(t.name);
+                    }}
+                  >
+                    <Pencil size={13} /> Editar
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setResetTarget(t)}>
+                    <KeyRound size={13} /> Reset pass
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-red-600 hover:bg-red-50"
+                    onClick={() => void openDeleteDialog(t)}
+                  >
+                    <Trash2 size={13} /> Eliminar
+                  </Button>
+                </div>
               </TD>
             </TR>
           ))}
@@ -282,6 +395,75 @@ export default function SuperAdminPage() {
               Cancelar
             </Button>
             <Button onClick={() => void handleResetPassword()}>Restablecer</Button>
+          </div>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={editTarget !== null}
+        onClose={() => setEditTarget(null)}
+        title={`Editar organización · ${editTarget?.name ?? ''}`}
+      >
+        <form onSubmit={handleEditSave} className="space-y-3">
+          <div>
+            <Label>Nombre de la organización</Label>
+            <Input value={editName} onChange={(e) => setEditName(e.target.value)} autoFocus />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setEditTarget(null)}>
+              Cancelar
+            </Button>
+            <Button type="submit">Guardar cambios</Button>
+          </div>
+        </form>
+      </Dialog>
+
+      <Dialog
+        open={deleteTarget !== null}
+        onClose={() => {
+          if (!deleting) setDeleteTarget(null);
+        }}
+        title={`Eliminar organización · ${deleteTarget?.name ?? ''}`}
+      >
+        <div className="space-y-3">
+          <div className="rounded-lg bg-red-50 px-3 py-2.5 text-xs leading-relaxed text-red-700">
+            <p className="font-bold">ADVERTENCIA · ACCIÓN IRREVERSIBLE</p>
+            <p className="mt-1">
+              Se borrarán <strong>permanentemente</strong> todos los datos asociados a esta
+              organización, en este dispositivo y en la nube:
+            </p>
+            <ul className="mt-1.5 list-inside list-disc">
+              <li>{deleteCounts.users} cuenta(s) de usuario (incluido su administrador)</li>
+              <li>{deleteCounts.borrowers} prestatario(s)</li>
+              <li>{deleteCounts.loans} préstamo(s) y sus pagarés</li>
+              <li>{deleteCounts.installments} cuota(s) con su historial de pagos</li>
+              <li>Registros de auditoría de la organización</li>
+            </ul>
+          </div>
+          <Button variant="secondary" size="sm" onClick={() => void exportBackup()}>
+            Descargar respaldo local (.json) por si acaso
+          </Button>
+          <div>
+            <Label>
+              Escribe <strong>{deleteTarget?.name}</strong> para habilitar la eliminación
+            </Label>
+            <Input
+              value={deleteConfirmText}
+              onChange={(e) => setDeleteConfirmText(e.target.value)}
+              placeholder="Nombre exacto de la organización"
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" disabled={deleting} onClick={() => setDeleteTarget(null)}>
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deleting || deleteConfirmText.trim() !== (deleteTarget?.name.trim() ?? '')}
+              onClick={() => void handleDeleteTenant()}
+            >
+              <Trash2 size={14} /> {deleting ? 'Eliminando…' : 'Eliminar definitivamente'}
+            </Button>
           </div>
         </div>
       </Dialog>
