@@ -1,6 +1,6 @@
 import { useMemo, useState, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Building2, Globe, KeyRound, Pencil, Plus, ShieldCheck, Trash2 } from 'lucide-react';
+import { Building2, Copy, Globe, KeyRound, Link2, Pencil, Plus, ShieldCheck, Trash2 } from 'lucide-react';
 import type { Tenant } from '../db/models';
 import { db, deleteTenantCascade, saveTenant, saveUser } from '../db/db';
 import { useAuth } from '../store/auth';
@@ -61,6 +61,25 @@ export default function SuperAdminPage() {
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [deleteCounts, setDeleteCounts] = useState({ users: 0, borrowers: 0, loans: 0, installments: 0 });
   const [deleting, setDeleting] = useState(false);
+  const [portalLinkTarget, setPortalLinkTarget] = useState<Tenant | null>(null);
+
+  const portalUrl = typeof window !== 'undefined' ? `${window.location.origin}/portal` : '/portal';
+
+  async function copyPortalLink() {
+    try {
+      await navigator.clipboard.writeText(portalUrl);
+      toast('Enlace copiado. Compártelo con tus clientes.', 'success');
+    } catch {
+      toast(`Copia manual: ${portalUrl}`, 'info');
+    }
+  }
+
+  function sharePortalByWhatsApp() {
+    const text = encodeURIComponent(
+      `Consulta el estado de tu crédito las 24 horas en este enlace: ${portalUrl} — necesitas tu número de documento y los últimos 4 dígitos de tu teléfono.`,
+    );
+    window.open(`https://wa.me/?text=${text}`, '_blank');
+  }
 
   async function openDeleteDialog(tenant: Tenant) {
     setDeleteTarget(tenant);
@@ -233,7 +252,7 @@ export default function SuperAdminPage() {
     });
     toast(
       next
-        ? 'Portal de clientes HABILITADO para esta organización.'
+        ? 'Portal de clientes HABILITADO. Usa el botón «Enlace» para compartirlo con los clientes.'
         : 'Portal de clientes deshabilitado.',
       'success',
     );
@@ -322,6 +341,16 @@ export default function SuperAdminPage() {
                   <Badge variant={t.clientPortalEnabled ? 'info' : 'muted'}>
                     {t.clientPortalEnabled ? 'ON' : 'OFF'}
                   </Badge>
+                  {t.clientPortalEnabled && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      title="Enlace para clientes"
+                      onClick={() => setPortalLinkTarget(t)}
+                    >
+                      <Link2 size={13} /> <span className="hidden xl:inline">Enlace</span>
+                    </Button>
+                  )}
                 </div>
               </TD>
               <TD className="text-right">
@@ -329,23 +358,25 @@ export default function SuperAdminPage() {
                   <Button
                     variant="ghost"
                     size="sm"
+                    title="Editar nombre"
                     onClick={() => {
                       setEditTarget(t);
                       setEditName(t.name);
                     }}
                   >
-                    <Pencil size={13} /> Editar
+                    <Pencil size={13} /> <span className="hidden xl:inline">Editar</span>
                   </Button>
-                  <Button variant="ghost" size="sm" onClick={() => setResetTarget(t)}>
-                    <KeyRound size={13} /> Reset pass
+                  <Button variant="ghost" size="sm" title="Restablecer contraseña del administrador" onClick={() => setResetTarget(t)}>
+                    <KeyRound size={13} /> <span className="hidden xl:inline">Reset pass</span>
                   </Button>
                   <Button
                     variant="ghost"
                     size="sm"
+                    title="Eliminar organización"
                     className="text-red-600 hover:bg-red-50"
                     onClick={() => void openDeleteDialog(t)}
                   >
-                    <Trash2 size={13} /> Eliminar
+                    <Trash2 size={13} /> <span className="hidden xl:inline">Eliminar</span>
                   </Button>
                 </div>
               </TD>
@@ -403,8 +434,7 @@ export default function SuperAdminPage() {
         open={editTarget !== null}
         onClose={() => setEditTarget(null)}
         title={`Editar organización · ${editTarget?.name ?? ''}`}
-      >
-        <form onSubmit={handleEditSave} className="space-y-3">
+      >        <form onSubmit={handleEditSave} className="space-y-3">
           <div>
             <Label>Nombre de la organización</Label>
             <Input value={editName} onChange={(e) => setEditName(e.target.value)} autoFocus />
@@ -463,6 +493,44 @@ export default function SuperAdminPage() {
               onClick={() => void handleDeleteTenant()}
             >
               <Trash2 size={14} /> {deleting ? 'Eliminando…' : 'Eliminar definitivamente'}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={portalLinkTarget !== null}
+        onClose={() => setPortalLinkTarget(null)}
+        title={`Portal de clientes · ${portalLinkTarget?.name ?? ''}`}
+        description="Comparte este enlace con los clientes de la organización para que consulten su crédito sin llamar."
+      >
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <Input value={portalUrl} readOnly className="font-mono text-xs" />
+            <Button size="sm" variant="secondary" onClick={() => void copyPortalLink()}>
+              <Copy size={14} /> Copiar
+            </Button>
+          </div>
+          <div className="rounded-lg bg-sky-50 px-3 py-2 text-xs leading-relaxed text-sky-800">
+            <p className="font-semibold">Cómo ingresa el cliente</p>
+            <ol className="mt-1 list-inside list-decimal">
+              <li>Abre el enlace (funciona en cualquier navegador, no requiere instalar nada)</li>
+              <li>Selecciona la organización «{portalLinkTarget?.name}»</li>
+              <li>Escribe su número de documento</li>
+              <li>Escribe los últimos 4 dígitos de su teléfono registrado</li>
+            </ol>
+            <p className="mt-1">Verá saldo, estado y próxima cuota de cada préstamo activo.</p>
+          </div>
+          <p className="text-[11px] text-slate-400">
+            Los clientes solo pueden consultar; no ven datos de otras organizaciones ni pueden
+            modificar nada.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setPortalLinkTarget(null)}>
+              Cerrar
+            </Button>
+            <Button variant="secondary" onClick={sharePortalByWhatsApp}>
+              Compartir por WhatsApp
             </Button>
           </div>
         </div>

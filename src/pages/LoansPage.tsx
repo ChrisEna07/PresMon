@@ -12,6 +12,7 @@ import { PageHeader, EmptyState } from '../components/misc';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Tabs } from '../components/ui/tabs';
+import { Dialog } from '../components/ui/dialog';
 
 const STATUS_LABEL: Record<LoanStatus, string> = {
   ACTIVE: 'Activo',
@@ -31,6 +32,7 @@ export default function LoansPage() {
   const navigate = useNavigate();
   const tenantId = session?.tenantId ?? '';
   const [filter, setFilter] = useState('all');
+  const [cancelTarget, setCancelTarget] = useState<Loan | null>(null);
 
   const loans = useLiveQuery(
     () => (tenantId ? db.loans.where('tenantId').equals(tenantId).toArray() : Promise.resolve([] as Loan[])),
@@ -81,9 +83,10 @@ export default function LoansPage() {
     }).sort((a, b) => b.startDate.localeCompare(a.startDate));
   }, [loans, filter]);
 
-  async function cancelLoan(loan: Loan) {
-    if (!session) return;
-    if (!window.confirm('¿Cancelar este préstamo? Quedará marcado como CANCELADO.')) return;
+  async function cancelLoan() {
+    const loan = cancelTarget;
+    if (!session || !loan) return;
+    setCancelTarget(null);
     await saveLoan({ ...loan, status: 'CANCELLED' });
     await logAudit({
       tenantId,
@@ -234,7 +237,7 @@ export default function LoansPage() {
                       className="text-red-500 hover:bg-red-50"
                       onClick={(e) => {
                         e.stopPropagation();
-                        void cancelLoan(loan);
+                        setCancelTarget(loan);
                       }}
                     >
                       <Ban size={13} /> Cancelar
@@ -246,6 +249,27 @@ export default function LoansPage() {
           })}
         </div>
       )}
+
+      <Dialog
+        open={cancelTarget !== null}
+        onClose={() => setCancelTarget(null)}
+        title="Cancelar préstamo"
+      >
+        <div className="space-y-3">
+          <p className="rounded-lg bg-red-50 px-3 py-2 text-xs leading-relaxed text-red-700">
+            El préstamo quedará marcado como <strong>CANCELADO</strong> y dejará de generar mora.
+            Quedará registrado en la auditoría. Esta acción no se puede deshacer.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setCancelTarget(null)}>
+              Volver
+            </Button>
+            <Button variant="destructive" onClick={() => void cancelLoan()}>
+              Sí, cancelar
+            </Button>
+          </div>
+        </div>
+      </Dialog>
     </div>
   );
 }

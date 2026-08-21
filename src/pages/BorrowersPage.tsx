@@ -47,6 +47,7 @@ export default function BorrowersPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm);
+  const [deleteTarget, setDeleteTarget] = useState<Borrower | null>(null);
 
   const borrowers = useLiveQuery(
     () =>
@@ -166,12 +167,18 @@ export default function BorrowersPage() {
     setDialogOpen(false);
   }
 
-  async function handleDelete(b: Borrower) {
+  function requestDelete(b: Borrower) {
     if ((loanCountByBorrower.get(b.borrowerId) ?? 0) > 0) {
       toast('No se puede eliminar: tiene préstamos activos.', 'error');
       return;
     }
-    if (!window.confirm(`¿Eliminar a ${b.fullName}? Esta acción no se puede deshacer.`)) return;
+    setDeleteTarget(b);
+  }
+
+  async function confirmDelete() {
+    const b = deleteTarget;
+    if (!b) return;
+    setDeleteTarget(null);
     await db.borrowers.delete(b.borrowerId);
     if (session) {
       await logAudit({
@@ -265,7 +272,7 @@ export default function BorrowersPage() {
                     <Button
                       variant="ghost"
                       size="icon"
-                      onClick={() => void handleDelete(b)}
+                      onClick={() => requestDelete(b)}
                       title="Eliminar"
                       className="text-red-500 hover:bg-red-50"
                     >
@@ -360,6 +367,27 @@ export default function BorrowersPage() {
             <Button type="submit">{editingId ? 'Guardar cambios' : 'Crear prestatario'}</Button>
           </div>
         </form>
+      </Dialog>
+
+      <Dialog
+        open={deleteTarget !== null}
+        onClose={() => setDeleteTarget(null)}
+        title="Eliminar prestatario"
+      >
+        <div className="space-y-3">
+          <p className="rounded-lg bg-red-50 px-3 py-2 text-xs leading-relaxed text-red-700">
+            ¿Eliminar a <strong>{deleteTarget?.fullName}</strong>? Esta acción no se puede deshacer
+            y quedará registrada en la auditoría.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>
+              Volver
+            </Button>
+            <Button variant="destructive" onClick={() => void confirmDelete()}>
+              Sí, eliminar
+            </Button>
+          </div>
+        </div>
       </Dialog>
     </div>
   );

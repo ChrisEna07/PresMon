@@ -19,6 +19,7 @@ import { downloadBlob } from '../lib/crypto';
 import { logAudit } from '../lib/auditLogger';
 import { DOCUMENT_TYPE_LABELS, FREQUENCY_LABELS, computeSchedule } from '../lib/financialCalculations';
 import { formatCOP, formatDateShort } from '../lib/format';
+import { openWhatsApp } from '../lib/share';
 import { PageHeader, StatCard } from '../components/misc';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -139,6 +140,7 @@ export default function LoanDetailPage() {
   const { session } = useAuth();
   const { toast } = useToast();
   const [payOpen, setPayOpen] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
 
   const loan = useLiveQuery<Loan | undefined>(
     () => (id ? db.loans.get(id) : Promise.resolve(undefined)),
@@ -255,33 +257,33 @@ export default function LoanDetailPage() {
     try {
       const blob = await buildContractPdf();
       if (!blob) return;
-      downloadBlob(blob, pdfFileName);
       const text = buildShareText();
       const file = new File([blob], pdfFileName, { type: 'application/pdf' });
       const canShareFiles =
         typeof navigator !== 'undefined' &&
         'canShare' in navigator &&
         navigator.canShare?.({ files: [file] });
-      if (canShareFiles) {
-        await navigator.share({
-          files: [file],
-          title: 'Pagaré PresMon',
-          text,
-        });
+      if (channel === 'whatsapp') {
+        if (canShareFiles && navigator.share) {
+          try {
+            await navigator.share({ files: [file], title: 'Pagaré PresMon', text });
+            return;
+          } catch (err) {
+            if (err instanceof DOMException && err.name === 'AbortError') return;
+          }
+        }
+        openWhatsApp(text);
+        downloadBlob(blob, pdfFileName);
+        toast(
+          'Se abrió WhatsApp con el mensaje listo. El PDF quedó descargado para adjuntarlo.',
+          'info',
+        );
         return;
       }
-      if (channel === 'whatsapp') {
-        window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
-      } else {
-        const subject = encodeURIComponent('Pagaré — ' + (borrower?.fullName ?? '') + ' (PresMon)');
-        window.location.href = `mailto:?subject=${subject}&body=${encodeURIComponent(text)}`;
-      }
-      toast(
-        channel === 'whatsapp'
-          ? 'PDF descargado. Se abrió WhatsApp para que lo envíes adjunto.'
-          : 'PDF descargado. Adjúntalo desde tu correo al enviar el mensaje.',
-        'info',
-      );
+      downloadBlob(blob, pdfFileName);
+      const subject = encodeURIComponent('Pagaré — ' + (borrower?.fullName ?? '') + ' (PresMon)');
+      window.location.href = `mailto:?subject=${subject}&body=${encodeURIComponent(text)}`;
+      toast('PDF descargado. Adjúntalo desde tu correo al enviar el mensaje.', 'info');
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
       toast(err instanceof Error ? err.message : 'Error compartiendo el pagaré', 'error');
@@ -290,7 +292,6 @@ export default function LoanDetailPage() {
 
   const handleCancel = async () => {
     if (!session) return;
-    if (!window.confirm('¿Cancelar este préstamo?')) return;
     await db.loans.put({
       ...currentLoan,
       status: 'CANCELLED',
@@ -340,7 +341,7 @@ export default function LoanDetailPage() {
                 <Button variant="outline" size="sm" onClick={() => setPayOpen(true)}>
                   <HandCoins size={14} /> Registrar abono
                 </Button>
-                <Button variant="ghost" size="sm" className="text-red-500 hover:bg-red-50" onClick={() => void handleCancel()}>
+                <Button variant="ghost" size="sm" className="text-red-500 hover:bg-red-50" onClick={() => setCancelOpen(true)}>
                   <Ban size={14} /> Cancelar préstamo
                 </Button>
               </>
@@ -439,6 +440,34 @@ export default function LoanDetailPage() {
       </TableWrap>
 
       <PaymentDialog open={payOpen} onClose={() => setPayOpen(false)} loan={loan} />
+
+      <Dialog
+        open={cancelOpen}
+        onClose={() => setCancelOpen(false)}
+        title="Cancelar préstamo"
+        description="Esta acción queda registrada en la auditoría."
+      >
+        <div className="space-y-3">
+          <p className="rounded-lg bg-red-50 px-3 py-2 text-xs leading-relaxed text-red-700">
+            El préstamo quedará marcado como <strong>CANCELADO</strong> y dejará de generar mora.
+            Las cuotas ya pagadas se conservan como historial. Esta acción no se puede deshacer.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setCancelOpen(false)}>
+              Volver
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                setCancelOpen(false);
+                void handleCancel();
+              }}
+            >
+              Sí, cancelar préstamo
+            </Button>
+          </div>
+        </div>
+      </Dialog>
     </div>
   );
 }

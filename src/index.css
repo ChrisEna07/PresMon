@@ -25,3 +25,33 @@ input[type="range"] {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+@keyframes toast-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes toast-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.toast-in-up {
+  animation: toast-in-up 0.25s ease-out both;
+}
+
+.toast-pop {
+  animation: toast-pop 0.2s ease-out both;
+}
