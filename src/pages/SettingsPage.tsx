@@ -201,13 +201,24 @@ export default function SettingsPage() {
       return;
     }
     try {
-      const superUsers = await db.users.where('role').equals('SUPER_ADMIN').toArray();
+      let superUsers = await db.users.where('role').equals('SUPER_ADMIN').toArray();
+      if (superUsers.length === 0) {
+        superUsers = (await db.users.toArray()).filter((u) => u.role === 'SUPER_ADMIN');
+      }
+      if (superUsers.length === 0) {
+        toast(
+          'No hay cuentas Super Admin en este dispositivo. Usa Borrar datos del sitio para restaurar el acceso.',
+          'error',
+        );
+        return;
+      }
       await db.transaction('rw', db.tables, async () => {
         for (const table of db.tables) {
           await table.clear();
         }
         await db.users.bulkPut(superUsers);
       });
+      localStorage.setItem('presmon_seeded_v1', 'done');
       setResetOpen(false);
       setResetConfirmText('');
       logout();

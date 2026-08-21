@@ -95,8 +95,14 @@ function baseFields() {
   return { createdAt: now, updatedAt: now, syncStatus: 'PENDING' as const };
 }
 
+const SEED_FLAG = 'presmon_seeded_v1';
+
 export async function seedDatabase(): Promise<void> {
-  if ((await db.tenants.count()) > 0) return;
+  if (localStorage.getItem(SEED_FLAG) === 'done') return;
+  if ((await db.tenants.count()) > 0 || (await db.users.count()) > 0) {
+    localStorage.setItem(SEED_FLAG, 'done');
+    return;
+  }
 
   const now = nowISO();
   const superUserId = uid();
@@ -335,4 +341,6 @@ export async function seedDatabase(): Promise<void> {
       await db.audit_logs.bulkPut(logs);
     },
   );
+
+  localStorage.setItem(SEED_FLAG, 'done');
 }
