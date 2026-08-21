@@ -23,6 +23,14 @@ export function isSyncConfigured(): boolean {
   return loadFirebaseConfig() !== null;
 }
 
+export function friendlySyncError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/failed to fetch|networkerror|load failed|err_name|network request failed|internetdisconnected/i.test(msg)) {
+    return 'Sin conexión. Tus cambios están a salvo en este dispositivo y se subirán solos al reconectar.';
+  }
+  return msg;
+}
+
 function idKeyOf(collection: SyncedCollection): string {
   return collection === 'audit_logs' ? 'logId' : collection.slice(0, -1) + 'Id';
 }

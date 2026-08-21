@@ -18,7 +18,7 @@ import {
   saveFirebaseConfig,
   type FirebaseConfig,
 } from '../lib/sync/firebaseConfig';
-import { getLastSync, runSync, setLastSync } from '../lib/sync/syncEngine';
+import { friendlySyncError, getLastSync, runSync, setLastSync } from '../lib/sync/syncEngine';
 import { sha256Hex, readFileAsText, downloadBlob } from '../lib/crypto';
 import { logAudit } from '../lib/auditLogger';
 import { formatDateTime } from '../lib/format';
@@ -81,10 +81,7 @@ export default function SettingsPage() {
       toast('Conexión exitosa con Firestore.', 'success');
       if (!getApps().length) await deleteApp(testApp);
     } catch (err) {
-      toast(
-        `No se pudo conectar: ${err instanceof Error ? err.message : 'error desconocido'}`,
-        'error',
-      );
+      toast(`No se pudo conectar: ${friendlySyncError(err)}`, 'error');
     }
   }
 
@@ -95,10 +92,10 @@ export default function SettingsPage() {
       const result = await runSync(isSuperAdmin ? undefined : session.tenantId);
       setLastSync(session.tenantId || 'global');
       setLastSyncAt(Date.now());
-      if (result.errors.length) toast(`Errores: ${result.errors[0]}`, 'error');
+      if (result.errors.length) toast(`Errores: ${friendlySyncError(result.errors[0])}`, 'error');
       else toast(`Sincronizado: ${result.pushed} enviados · ${result.pulled} recibidos.`, 'success');
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Error de sincronización', 'error');
+      toast(friendlySyncError(err), 'error');
     } finally {
       setSyncing(false);
     }

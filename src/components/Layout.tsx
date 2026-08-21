@@ -18,7 +18,7 @@ import {
 import { db } from '../db/db';
 import { useAuth } from '../store/auth';
 import { useOnline } from '../hooks/useOnline';
-import { isSyncConfigured, runSync, setLastSync } from '../lib/sync/syncEngine';
+import { friendlySyncError, isSyncConfigured, runSync, setLastSync } from '../lib/sync/syncEngine';
 import { cn } from '../lib/format';
 import { useToast } from './ui/toast';
 
@@ -61,12 +61,12 @@ export default function Layout() {
       const result = await runSync(session.role === 'SUPER_ADMIN' ? undefined : session.tenantId);
       setLastSync(session.tenantId || 'global');
       if (result.errors.length > 0) {
-        toast(`Sincronización con errores: ${result.errors[0]}`, 'error');
+        toast(`Sincronización con errores: ${friendlySyncError(result.errors[0])}`, 'error');
       } else if (!silent) {
         toast(`Sincronizado: ${result.pushed} enviados, ${result.pulled} recibidos.`, 'success');
       }
     } catch (err) {
-      if (!silent) toast(err instanceof Error ? err.message : 'Error de sincronización', 'error');
+      if (!silent) toast(friendlySyncError(err), 'error');
     } finally {
       setSyncing(false);
     }
