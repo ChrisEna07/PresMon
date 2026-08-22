@@ -1,7 +1,20 @@
 import { useMemo, useState, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Building2, Copy, Globe, KeyRound, Link2, Pencil, Plus, ShieldCheck, Trash2 } from 'lucide-react';
-import type { Tenant } from '../db/models';
+import {
+  Building2,
+  Copy,
+  Globe,
+  KeyRound,
+  Link2,
+  Lock,
+  LockOpen,
+  Megaphone,
+  Pencil,
+  Plus,
+  ShieldCheck,
+  Trash2,
+} from 'lucide-react';
+import type { NoticeLevel, Tenant } from '../db/models';
 import { db, deleteTenantCascade, saveTenant, saveUser } from '../db/db';
 import { useAuth } from '../store/auth';
 import { sha256Hex } from '../lib/crypto';
@@ -12,7 +25,7 @@ import { PageHeader, StatCard } from '../components/misc';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Dialog } from '../components/ui/dialog';
-import { Input, Label } from '../components/ui/input';
+import { Input, Label, Select } from '../components/ui/input';
 import { Switch } from '../components/ui/switch';
 import { TBody, TD, TH, THead, TR, TableWrap } from '../components/ui/table';
 import { useToast } from '../components/ui/toast';
@@ -66,6 +79,10 @@ export default function SuperAdminPage() {
   const [deleting, setDeleting] = useState(false);
   const [portalLinkTarget, setPortalLinkTarget] = useState<Tenant | null>(null);
   const [createCloud, setCreateCloud] = useState(true);
+  const [noticeTarget, setNoticeTarget] = useState<Tenant | null>(null);
+  const [noticeText, setNoticeText] = useState('');
+  const [noticeLevel, setNoticeLevel] = useState<NoticeLevel>('info');
+  const [noticeAction, setNoticeAction] = useState<'send' | 'clear'>('send');
 
   const portalUrl = typeof window !== 'undefined' ? `${window.location.origin}/portal` : '/portal';
 
@@ -215,11 +232,104 @@ export default function SuperAdminPage() {
     });
     toast(
       next
-        ? `Sincronización en la nube ACTIVADA para «${tenant.name}».`
-        : `Sincronización en la nube DESACTIVADA para «${tenant.name}». Su app será offline pura.`,
+        ? `Respaldo en la nube ACTIVADO para «${tenant.name}».`
+        : `Respaldo en la nube DESACTIVADO para «${tenant.name}». Sus datos dejarán de sincronizar.`,
       next ? 'success' : 'warning',
     );
     pushToCloud();
+  }
+
+  async function toggleRemoteControl(tenant: Tenant) {
+    if (!session) return;
+    const next = tenant.remoteControlEnabled !== false;
+    await saveTenant({
+      ...tenant,
+      remoteControlEnabled: !next,
+      updatedAt: new Date().toISOString(),
+      syncStatus: 'PENDING',
+    });
+    await logAudit({
+      tenantId: '',
+      action: 'TENANT_UPDATED',
+      actorId: session.userId,
+      actorName: session.displayName,
+      entityId: tenant.tenantId,
+      entityType: 'tenants',
+      payloadSnapshot: { campo: 'remoteControlEnabled', valor: !next },
+    });
+    toast(
+      next
+        ? `Control de cuenta DESACTIVADO para «${tenant.name}». Ya no recibirán bloqueos, avisos ni banner de pago.`
+        : `Control de cuenta ACTIVADO para «${tenant.name}».`,
+      next ? 'warning' : 'success',
+    );
+    pushToCloud();
+  }
+
+  async function setAppLock(tenant: Tenant, locked: boolean) {
+    if (!session) return;
+    await saveTenant({
+      ...tenant,
+      appLocked: locked,
+      updatedAt: new Date().toISOString(),
+      syncStatus: 'PENDING',
+    });
+    await logAudit({
+      tenantId: '',
+      action: 'TENANT_UPDATED',
+      actorId: session.userId,
+      actorName: session.displayName,
+      entityId: tenant.tenantId,
+      entityType: 'tenants',
+      payloadSnapshot: { campo: 'appLocked', valor: locked },
+    });
+    toast(
+      locked
+        ? `«${tenant.name}» BLOQUEADA. Su app quedará inutilizable al conectarse (≤30 s).`
+        : `«${tenant.name}» DESBLOQUEADA. Recuperará el acceso al conectarse.`,
+      locked ? 'warning' : 'success',
+    );
+    pushToCloud();
+  }
+
+  async function sendNotice(e: FormEvent) {
+    e.preventDefault();
+    if (!session || !noticeTarget) return;
+    if (!noticeText.trim()) {
+      toast('Escribe el mensaje del aviso.', 'error');
+      return;
+    }
+    await saveTenant({
+      ...noticeTarget,
+      notice:
+        noticeAction === 'clear'
+          ? undefined
+          : {
+              message: noticeText.trim(),
+              level: noticeLevel,
+              updatedAt: new Date().toISOString(),
+            },
+      updatedAt: new Date().toISOString(),
+      syncStatus: 'PENDING',
+    });
+    await logAudit({
+      tenantId: '',
+      action: 'TENANT_UPDATED',
+      actorId: session.userId,
+      actorName: session.displayName,
+      entityId: noticeTarget.tenantId,
+      entityType: 'tenants',
+      payloadSnapshot: { campo: 'notice', accion: noticeAction, nivel: noticeLevel },
+    });
+    setNoticeTarget(null);
+    setNoticeText('');
+    pushToCloud();
+    toast(
+      noticeAction === 'clear'
+        ? 'Aviso retirado.'
+        : 'Aviso enviado. Aparecerá en su panel al conectarse.',
+      'success',
+    );
   }
 
   async function handleCreateTenant(e: FormEvent) {
@@ -365,14 +475,28 @@ export default function SuperAdminPage() {
           <TH>Préstamos</TH>
           <TH>Creada</TH>
           <TH>Estado</TH>
-          <TH>Sync nube</TH>
+          <TH>Control cuenta</TH>
+          <TH>Respaldo cloud</TH>
           <TH>ENABLE_CLIENT_PORTAL</TH>
           <TH className="text-right">Acciones</TH>
         </THead>
         <TBody>
           {(tenants ?? []).map((t) => (
-            <TR key={t.tenantId}>
-              <TD className="font-medium text-slate-800">{t.name}</TD>
+            <TR key={t.tenantId} className={t.appLocked ? 'bg-red-50/60' : undefined}>
+              <TD className="font-medium text-slate-800">
+                {t.name}
+                {t.appLocked && (
+                  <span className="ml-2 inline-flex items-center gap-1 align-middle">
+                    <Lock size={12} className="text-red-500" />
+                    <Badge variant="danger">BLOQUEADA</Badge>
+                  </span>
+                )}
+                {!t.appLocked && t.notice && t.notice.message.trim() !== '' && (
+                  <span className="ml-2">
+                    <Megaphone size={12} className="inline text-sky-500" />
+                  </span>
+                )}
+              </TD>
               <TD className="text-slate-600">{adminByTenant.get(t.tenantId) ?? '—'}</TD>
               <TD>
                 {(loans ?? []).filter((l) => l.tenantId === t.tenantId).length}
@@ -393,9 +517,21 @@ export default function SuperAdminPage() {
               <TD>
                 <div className="flex items-center gap-2">
                   <Switch
+                    checked={t.remoteControlEnabled !== false}
+                    onChange={() => void toggleRemoteControl(t)}
+                    label="Control"
+                  />
+                  <Badge variant={t.remoteControlEnabled !== false ? 'success' : 'muted'}>
+                    {t.remoteControlEnabled !== false ? 'CTRL ON' : 'CTRL OFF'}
+                  </Badge>
+                </div>
+              </TD>
+              <TD>
+                <div className="flex items-center gap-2">
+                  <Switch
                     checked={t.cloudSyncEnabled !== false}
                     onChange={() => void toggleCloudSync(t)}
-                    label="Sync nube"
+                    label="Respaldo"
                   />
                   <Badge variant={t.cloudSyncEnabled !== false ? 'success' : 'muted'}>
                     {t.cloudSyncEnabled !== false ? 'CLOUD' : 'OFFLINE'}
@@ -427,6 +563,42 @@ export default function SuperAdminPage() {
               </TD>
               <TD className="text-right">
                 <div className="flex justify-end gap-1">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    title={
+                      t.appLocked
+                        ? 'Desbloquear app (quitar bloqueo por impago)'
+                        : 'Bloquear app por falta de pago'
+                    }
+                    onClick={() => void setAppLock(t, !t.appLocked)}
+                  >
+                    {t.appLocked ? (
+                      <>
+                        <LockOpen size={13} />{' '}
+                        <span className="hidden xl:inline">Desbloquear</span>
+                      </>
+                    ) : (
+                      <>
+                        <Lock size={13} className="text-red-500" />{' '}
+                        <span className="hidden xl:inline text-red-600">Bloquear</span>
+                      </>
+                    )}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    title="Enviar / retirar aviso en su panel"
+                    onClick={() => {
+                      setNoticeTarget(t);
+                      setNoticeAction('send');
+                      setNoticeText(t.notice?.message ?? '');
+                      setNoticeLevel(t.notice?.level ?? 'info');
+                    }}
+                  >
+                    <Megaphone size={13} />{' '}
+                    <span className="hidden xl:inline">Aviso</span>
+                  </Button>
                   <Button
                     variant="ghost"
                     size="sm"
@@ -615,6 +787,63 @@ export default function SuperAdminPage() {
             </Button>
           </div>
         </div>
+      </Dialog>
+
+      <Dialog
+        open={noticeTarget !== null}
+        onClose={() => setNoticeTarget(null)}
+        title={`Aviso para «${noticeTarget?.name ?? ''}»`}
+        description="Se mostrará como banner en su panel al conectarse. Úsalo para recordatorios de pago o comunicados."
+      >
+        <form onSubmit={sendNotice} className="space-y-3">
+          <div>
+            <Label>Mensaje</Label>
+            <Input
+              value={noticeText}
+              onChange={(e) => setNoticeText(e.target.value)}
+              placeholder="Ej: Tu cuota venció ayer. Por favor ponte al día para evitar el bloqueo."
+              autoFocus
+            />
+          </div>
+          <div>
+            <Label>Importancia</Label>
+            <Select
+              value={noticeLevel}
+              onChange={(e) => setNoticeLevel(e.target.value as NoticeLevel)}
+              disabled={noticeAction === 'clear'}
+            >
+              <option value="info">Informativo (azul)</option>
+              <option value="warning">Advertencia (ámbar)</option>
+              <option value="danger">Urgente / cobro (rojo)</option>
+            </Select>
+          </div>
+          {noticeTarget && noticeTarget.notice && noticeTarget.notice.message.trim() !== '' && (
+            <p className="text-xs text-slate-500">
+              Aviso actual: «{noticeTarget.notice.message}»
+            </p>
+          )}
+          <div className="flex justify-end gap-2">
+            {noticeTarget && noticeTarget.notice && noticeTarget.notice.message.trim() !== '' && (
+              <Button
+                type="button"
+                variant="outline"
+                className="text-red-600"
+                onClick={() => {
+                  setNoticeAction('clear');
+                  void sendNotice({ preventDefault: () => undefined } as FormEvent);
+                }}
+              >
+                Retirar aviso
+              </Button>
+            )}
+            <Button type="button" variant="secondary" onClick={() => setNoticeTarget(null)}>
+              Cancelar
+            </Button>
+            <Button type="submit" disabled={noticeAction === 'clear'}>
+              Enviar aviso
+            </Button>
+          </div>
+        </form>
       </Dialog>
     </div>
   );

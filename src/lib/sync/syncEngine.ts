@@ -146,6 +146,7 @@ export async function runSync(tenantId?: string): Promise<SyncResult> {
 export interface RemoteTenantState {
   found: boolean;
   status?: string;
+  data?: Record<string, unknown>;
 }
 
 /**
@@ -159,7 +160,7 @@ export async function fetchRemoteTenant(tenantId: string): Promise<RemoteTenantS
     const snap = await getDoc(doc(fs, 'tenants', tenantId));
     if (!snap.exists()) return { found: false };
     const data = snap.data() as Record<string, unknown> | undefined;
-    return { found: true, status: String(data?.status ?? '') };
+    return { found: true, status: String(data?.status ?? ''), data };
   } catch {
     return null;
   }

@@ -32,13 +32,31 @@ export interface BaseRecord {
   syncStatus: SyncStatus;
 }
 
+export type NoticeLevel = 'info' | 'warning' | 'danger';
+
+export interface TenantNotice {
+  message: string;
+  level: NoticeLevel;
+  updatedAt: string;
+}
+
 export interface Tenant extends BaseRecord {
   tenantId: string;
   name: string;
   adminUid: string;
   status: TenantStatus;
   clientPortalEnabled: boolean;
+  /**
+   * Canal de CONTROL DE CUENTA (antifraude): banner de pago, bloqueo
+   * remoto por impago y avisos inyectados. Activo por defecto.
+   */
+  remoteControlEnabled?: boolean;
+  /** Respaldo en la nube y sincronización multi-dispositivo. Activo por defecto. */
   cloudSyncEnabled?: boolean;
+  /** Bloqueo total de la app hasta que pague (canal de control). */
+  appLocked?: boolean;
+  /** Aviso inyectado por ChrizDev que se muestra en su panel. */
+  notice?: TenantNotice;
 }
 
 export interface UserAccount extends BaseRecord {

@@ -8,7 +8,9 @@ import {
   CloudUpload,
   HandCoins,
   LayoutDashboard,
+  Lock,
   LogOut,
+  Megaphone,
   ScrollText,
   Settings,
   ShieldCheck,
@@ -24,11 +26,13 @@ import { useAuth } from '../store/auth';
 import { useOnline } from '../hooks/useOnline';
 import {
   ensureSuperAdminSynced,
+  fetchRemoteTenant,
   friendlySyncError,
   isSyncConfigured,
   runSync,
   setLastSync,
 } from '../lib/sync/syncEngine';
+import { openWhatsApp } from '../lib/share';
 import { cn, addDaysStr, formatCOP, formatDateShort, todayStr } from '../lib/format';
 import { useToast } from './ui/toast';
 
@@ -77,7 +81,46 @@ export default function Layout() {
   );
 
   const [bannerDismissedFor, setBannerDismissedFor] = useState('');
+  const [noticeDismissedAt, setNoticeDismissedAt] = useState('');
   const showPlanBanner = !!duePlanItem && bannerDismissedFor !== duePlanItem.installmentId;
+
+  const activeNotice = tenantRecord?.notice;
+  const showNotice =
+    session?.role === 'TENANT_ADMIN' &&
+    !!activeNotice &&
+    activeNotice.message.trim() !== '' &&
+    noticeDismissedAt !== activeNotice.updatedAt;
+  const appLocked =
+    session?.role === 'TENANT_ADMIN' && tenantRecord?.appLocked === true;
+
+  /**
+   * Canal de CONTROL DE CUENTA: consulta el documento remoto de la
+   * organización (aunque el respaldo de datos esté apagado) y persiste
+   * bloqueos/avisos localmente para que sobrevivan recargas sin internet.
+   */
+  async function pollRemoteControl(): Promise<void> {
+    if (!session || session.role !== 'TENANT_ADMIN' || !session.tenantId) return;
+    if (!isSyncConfigured()) return;
+    const local = await db.tenants.get(session.tenantId);
+    if (local?.remoteControlEnabled === false) return;
+    const remote = await fetchRemoteTenant(session.tenantId);
+    if (!remote || !remote.found || !remote.data) return;
+    if (remote.status === 'DELETED') return; // el guardia de sesión ya lo maneja
+    const nextLocked = remote.data.appLocked === true;
+    const nextNotice = (remote.data.notice ?? undefined) as Tenant['notice'];
+    if (!local) return;
+    const changed =
+      local.appLocked !== nextLocked ||
+      JSON.stringify(local.notice ?? null) !== JSON.stringify(nextNotice ?? null);
+    if (!changed) return;
+    await db.tenants.put({
+      ...local,
+      appLocked: nextLocked,
+      notice: nextNotice,
+      updatedAt: String(remote.data.updatedAt ?? local.updatedAt),
+      syncStatus: 'SYNCED',
+    });
+  }
 
   useEffect(() => {
     if (!online) return;
@@ -108,6 +151,7 @@ export default function Layout() {
       navigate('/login', { replace: true });
       return false;
     }
+    void pollRemoteControl().catch(() => undefined);
     return true;
   }
 
@@ -274,6 +318,74 @@ export default function Layout() {
             >
               <X size={15} />
             </button>
+          </div>
+        )}
+
+        {showNotice && activeNotice && (
+          <div
+            className={cn(
+              'flex flex-wrap items-center gap-x-2 gap-y-1 px-4 py-2.5 text-sm',
+              activeNotice.level === 'danger'
+                ? 'bg-red-600 text-white'
+                : activeNotice.level === 'warning'
+                  ? 'bg-amber-100 text-amber-900'
+                  : 'bg-sky-100 text-sky-900',
+            )}
+          >
+            <Megaphone size={16} />
+            <span className="font-semibold">Aviso de ChrizDev:</span>
+            <span>{activeNotice.message}</span>
+            <button
+              onClick={() => setNoticeDismissedAt(activeNotice.updatedAt)}
+              className="ml-auto cursor-pointer rounded p-1 opacity-70 hover:opacity-100"
+              aria-label="Ocultar aviso"
+            >
+              <X size={15} />
+            </button>
+          </div>
+        )}
+
+        {appLocked && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/95 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-md rounded-2xl border border-red-500/30 bg-slate-900 p-8 text-center shadow-2xl">
+              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-red-500/15">
+                <Lock size={32} className="text-red-500" />
+              </div>
+              <h2 className="text-xl font-bold text-white">Servicio suspendido</h2>
+              <p className="mt-2 text-sm leading-relaxed text-slate-300">
+                El acceso a PresMon está bloqueado por pagos pendientes con ChrizDev. Tus datos
+                están a salvo y se restituirá el acceso inmediatamente después de ponerte al día.
+              </p>
+              {duePlanItem && (
+                <div className="mt-4 rounded-lg bg-red-500/10 px-4 py-3 text-left text-sm">
+                  <p className="font-bold text-red-400">
+                    Saldo pendiente: {formatCOP(duePlanItem.amount)}
+                  </p>
+                  <p className="text-slate-300">
+                    {duePlanItem.concept} · vencía {formatDateShort(duePlanItem.dueDate)}
+                  </p>
+                </div>
+              )}
+              <button
+                onClick={() =>
+                  openWhatsApp(
+                    `Hola ChrizDev, soy ${session?.tenantName ?? 'un cliente'} de PresMon. Quiero ponerme al día con mi plan para reactivar la app.`,
+                  )
+                }
+                className="mt-5 w-full cursor-pointer rounded-xl bg-emerald-600 px-4 py-3 font-bold text-white transition-colors hover:bg-emerald-500"
+              >
+                Contactar para pagar y reactivar
+              </button>
+              <button
+                onClick={() => {
+                  logout();
+                  navigate('/login', { replace: true });
+                }}
+                className="mt-3 cursor-pointer text-xs text-slate-400 underline-offset-2 hover:text-slate-200 hover:underline"
+              >
+                Cerrar sesión en este dispositivo
+              </button>
+            </div>
           </div>
         )}
 
