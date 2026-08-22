@@ -26,5 +26,9 @@ service cloud.firestore {
     match /audit_logs/{doc} {
       allow read, write: if true;
     }
+
+    match /plans/{doc} {
+      allow read, write: if true;
+    }
   }
 }
