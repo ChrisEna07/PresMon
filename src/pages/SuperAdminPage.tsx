@@ -84,20 +84,25 @@ export default function SuperAdminPage() {
   const [noticeLevel, setNoticeLevel] = useState<NoticeLevel>('info');
   const [noticeAction, setNoticeAction] = useState<'send' | 'clear'>('send');
 
-  const portalUrl = typeof window !== 'undefined' ? `${window.location.origin}/portal` : '/portal';
+  const portalUrlFor = (tenant: Tenant | null) =>
+    typeof window !== 'undefined' && tenant
+      ? `${window.location.origin}/portal?t=${tenant.tenantId}`
+      : '/portal';
 
   async function copyPortalLink() {
     try {
-      await navigator.clipboard.writeText(portalUrl);
-      toast('Enlace copiado. Compártelo con tus clientes.', 'success');
+      await navigator.clipboard.writeText(portalUrlFor(portalLinkTarget));
+      toast('Enlace copiado. Solo da acceso a esta organización.', 'success');
     } catch {
-      toast(`Copia manual: ${portalUrl}`, 'info');
+      toast(`Copia manual: ${portalUrlFor(portalLinkTarget)}`, 'info');
     }
   }
 
   function sharePortalByWhatsApp() {
+    const url = portalUrlFor(portalLinkTarget);
+    const org = portalLinkTarget?.name ?? '';
     const text = encodeURIComponent(
-      `Consulta el estado de tu crédito las 24 horas en este enlace: ${portalUrl} — necesitas tu número de documento y los últimos 4 dígitos de tu teléfono.`,
+      `Consulta el estado de tu crédito las 24 horas en este enlace (${org}): ${url} — necesitas tu número de documento y los últimos 4 dígitos de tu teléfono. ¿Buscas un préstamo? También puedes solicitarlo desde ahí.`,
     );
     window.open(`https://wa.me/?text=${text}`, '_blank');
   }
@@ -759,7 +764,7 @@ export default function SuperAdminPage() {
       >
         <div className="space-y-3">
           <div className="flex items-center gap-2">
-            <Input value={portalUrl} readOnly className="font-mono text-xs" />
+            <Input value={portalUrlFor(portalLinkTarget)} readOnly className="font-mono text-xs" />
             <Button size="sm" variant="secondary" onClick={() => void copyPortalLink()}>
               <Copy size={14} /> Copiar
             </Button>
@@ -775,8 +780,9 @@ export default function SuperAdminPage() {
             <p className="mt-1">Verá saldo, estado y próxima cuota de cada préstamo activo.</p>
           </div>
           <p className="text-[11px] text-slate-400">
-            Los clientes solo pueden consultar; no ven datos de otras organizaciones ni pueden
-            modificar nada.
+            Este enlace es EXCLUSIVO para «{portalLinkTarget?.name}»: el cliente no verá otras
+            organizaciones, evitando confusiones y registros duplicados. Los clientes solo pueden
+            consultar y solicitar; no pueden modificar nada.
           </p>
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={() => setPortalLinkTarget(null)}>

@@ -83,11 +83,20 @@ export interface PlanInstallment {
   paidAt?: string;
 }
 
+/** Modo de pago de la licencia de la app. */
+export type AppPaymentMode = 'FULL' | 'INSTALLMENTS';
+
 export interface ServicePlan extends BaseRecord {
   planId: string;
   tenantId: string;
   name: string;
   cloudServiceIncluded: boolean;
+  /** Cómo paga el cliente la app: de contado o financiada por cuotas. */
+  appPaymentMode?: AppPaymentMode;
+  /** Valor total acordado de la app (modo contado). */
+  appTotalAmount?: number;
+  /** Mensualidad recurrente de servicios cloud, independiente del pago de la app (0 = sin cobro). */
+  cloudMonthlyFee?: number;
   notes?: string;
   installments: PlanInstallment[];
 }
@@ -124,6 +133,12 @@ export interface Loan extends BaseRecord {
   status: LoanStatus;
   startDate: string;
   contractPdfBlobRef: string | null;
+  /** Solicitud de origen con la foto de la garantía (si nació del portal). */
+  guaranteeRequestId?: string;
+  /** Momento en que el admin confirmó la entrega física de la garantía. */
+  guaranteeReceivedAt?: string | null;
+  /** Referencia de consulta heredada de la solicitud del portal. */
+  referenceCode?: string;
 }
 
 export type LoanRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
@@ -145,9 +160,13 @@ export interface LoanRequest extends BaseRecord {
   /** Versión del texto de términos aceptado (trazabilidad legal). */
   termsVersion: string;
   clientIp?: string;
-  /** Soporte visual comprimido (JPEG base64) para verificación. */
+  /** Descripción del bien dejado en garantía. */
+  guaranteeDescription?: string;
+  /** Soporte visual comprimido (JPEG base64): foto del cliente con su garantía. */
   supportDataUrl?: string;
   supportFileName?: string;
+  /** Código corto de consulta (ej. PM-8F3K2A) para que el cliente verifique su estado sin documento. */
+  referenceCode?: string;
   status: LoanRequestStatus;
   decidedByUid?: string;
   decidedByName?: string;

@@ -6,13 +6,16 @@ import {
   FileDown,
   FileSpreadsheet,
   HandCoins,
+  Loader2,
   Lock,
+  RefreshCw,
   ScrollText,
   ShieldCheck,
   UserRound,
 } from 'lucide-react';
 import type { AuditLog, Tenant } from '../db/models';
 import { db } from '../db/db';
+import { isSyncConfigured, runSync } from '../lib/sync/syncEngine';
 import { useAuth } from '../store/auth';
 import { ACTION_LABELS, AUDIT_FILTERS } from '../lib/auditLogger';
 import { decryptString, downloadBlob, encryptString } from '../lib/crypto';
@@ -44,6 +47,25 @@ export default function AuditPage() {
   const [orgFilter, setOrgFilter] = useState('all');
   const [encryptOpen, setEncryptOpen] = useState(false);
   const [passphrase, setPassphrase] = useState('');
+  const [syncing, setSyncing] = useState(false);
+
+  async function refreshFromCloud() {
+    setSyncing(true);
+    try {
+      const r = await runSync();
+      if (r.errors.length > 0) {
+        toast(`Sincronización con errores: ${r.errors[0]}`, 'error');
+      } else if (r.pulled === 0) {
+        toast('Auditoría al día: no hay registros nuevos en la nube.', 'info');
+      } else {
+        toast(`${r.pulled} registro(s) nuevo(s) descargado(s) de las organizaciones.`, 'success');
+      }
+    } catch {
+      toast('No se pudo conectar con la nube.', 'error');
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   const tenantsList = useLiveQuery(async () => db.tenants.toArray() as Promise<Tenant[]>, []);
   const tenantNameById = useMemo(() => {
@@ -157,6 +179,12 @@ export default function AuditPage() {
         }
         actions={
           <>
+            {isSuper && isSyncConfigured() && (
+              <Button variant="outline" size="sm" onClick={() => void refreshFromCloud()} disabled={syncing}>
+                {syncing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                Actualizar desde la nube
+              </Button>
+            )}
             <Button variant="outline" size="sm" onClick={exportCSV}>
               <FileSpreadsheet size={14} /> CSV
             </Button>

@@ -9,8 +9,9 @@ import {
   HandCoins,
   Mail,
   MessageCircle,
+  Package,
 } from 'lucide-react';
-import type { Borrower, Installment, Loan } from '../db/models';
+import type { Borrower, Installment, Loan, LoanRequest } from '../db/models';
 import { db, savePdfBlob } from '../db/db';
 import { useAuth } from '../store/auth';
 import { applyPaymentToLoan } from '../lib/payments';
@@ -156,6 +157,13 @@ export default function LoanDetailPage() {
         ? db.installments.where('loanId').equals(id).toArray()
         : Promise.resolve([] as Installment[]),
     [id],
+  );
+  const guaranteeRequest = useLiveQuery<LoanRequest | undefined>(
+    () =>
+      loan?.guaranteeRequestId
+        ? db.loan_requests.get(loan.guaranteeRequestId)
+        : Promise.resolve(undefined),
+    [loan?.guaranteeRequestId],
   );
 
   if (!loan) {
@@ -330,7 +338,7 @@ export default function LoanDetailPage() {
     <div>
       <PageHeader
         title={borrower?.fullName ?? 'Préstamo'}
-        description={`${borrower?.documentType ?? ''} ${borrower?.documentNumber ?? ''} · ${FREQUENCY_LABELS[loan.frequency]} · ${loan.interestRatePercent}% por periodo · inicio ${formatDateShort(loan.startDate)}`}
+        description={`${borrower?.documentType ?? ''} ${borrower?.documentNumber ?? ''}${loan.referenceCode ? ` · Ref ${loan.referenceCode}` : ''} · ${FREQUENCY_LABELS[loan.frequency]} · ${loan.interestRatePercent}% por periodo · inicio ${formatDateShort(loan.startDate)}`}
         actions={
           <>
             <Button variant="ghost" size="sm" onClick={() => navigate('/loans')}>
@@ -376,8 +384,34 @@ export default function LoanDetailPage() {
         />
       </div>
 
-      <h2 className="mt-6 mb-2 font-semibold text-slate-700">Plan de pagos</h2>
-      <TableWrap>
+      {guaranteeRequest && (
+        <div className="mt-6 rounded-xl border border-amber-200 bg-amber-50 p-4">
+          <p className="flex items-center gap-1.5 text-sm font-bold text-amber-800">
+            <Package size={15} /> Garantía del crédito
+          </p>
+          <p className="mt-1 text-sm text-amber-900">
+            {guaranteeRequest.guaranteeDescription || 'Sin descripción.'}
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            {guaranteeRequest.supportDataUrl && (
+              <a href={guaranteeRequest.supportDataUrl} target="_blank" rel="noreferrer">
+                <img
+                  src={guaranteeRequest.supportDataUrl}
+                  alt="Foto de la garantía"
+                  className="h-24 w-32 rounded-lg border border-amber-300 object-cover"
+                />
+              </a>
+            )}
+            <Badge variant={loan.guaranteeReceivedAt ? 'success' : 'warning'}>
+              {loan.guaranteeReceivedAt
+                ? `Entregada · ${formatDateShort(loan.guaranteeReceivedAt.slice(0, 10))}`
+                : 'Pendiente de entrega física'}
+            </Badge>
+          </div>
+        </div>
+      )}
+
+      <h2 className="mt-6 mb-2 font-semibold text-slate-700">Plan de pagos</h2>      <TableWrap>
         <THead>
           <TH>#</TH>
           <TH>Vencimiento</TH>

@@ -66,7 +66,7 @@ function AppEffects() {
         .catch(() => undefined);
     };
     const t = window.setTimeout(attempt, 2500);
-    const interval = window.setInterval(attempt, 5 * 60 * 1000);
+    const interval = window.setInterval(attempt, 2 * 60 * 1000);
     window.addEventListener('online', attempt);
     return () => {
       window.clearTimeout(t);
