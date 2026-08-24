@@ -1,5 +1,5 @@
 import type { BaseRecord } from '../../db/models';
-import { db, nowISO } from '../../db/db';
+import { db, nowISO, purgeLocalTenantData } from '../../db/db';
 import { loadFirebaseConfig } from './firebaseConfig';
 import { isOfflineEdition } from '../offlineEdition';
 
@@ -101,6 +101,24 @@ export async function runSync(tenantId?: string): Promise<SyncResult> {
         const local = (await table.get(String(remote[key]))) as
           | (BaseRecord & Record<string, unknown>)
           | undefined;
+
+        /**
+         * TUMBA DE ORGANIZACIÓN: siempre gana, sin importar updatedAt.
+         * Evita que una copia local antigua ACTIVE «resucite» una
+         * organización borrada mediante last-write-wins.
+         */
+        if (
+          name === 'tenants' &&
+          String(remote.status ?? '') === 'DELETED'
+        ) {
+          if (!local || local.status !== 'DELETED') {
+            await table.put({ ...remote, syncStatus: 'SYNCED' });
+            await purgeLocalTenantData(String(remote[key]));
+            result.pulled += 1;
+          }
+          continue;
+        }
+
         if (!local) {
           await table.put({ ...remote, syncStatus: 'SYNCED' });
           result.pulled += 1;
@@ -132,8 +150,8 @@ export async function runSync(tenantId?: string): Promise<SyncResult> {
        * Reconciliación de organizaciones fantasma (solo sesiones Super Admin):
        * si una organización existe localmente como ACTIVE/SUSPENDED pero su
        * documento NO existe en la nube, fue borrada con el método antiguo
-       * (purga sin lápida). Se marca DELETED localmente para que deje de
-       * aparecer en todos los listados.
+       * (purga sin lápida). Se marca DELETED localmente y se purgan sus
+       * datos operativos para que desaparezca de TODOS los listados.
        */
       if (name === 'tenants' && !tenantId) {
         const remoteIds = new Set(
@@ -152,6 +170,7 @@ export async function runSync(tenantId?: string): Promise<SyncResult> {
               updatedAt: new Date().toISOString(),
               syncStatus: 'SYNCED',
             });
+            await purgeLocalTenantData(String(lt[key]));
             result.pulled += 1;
           }
         }

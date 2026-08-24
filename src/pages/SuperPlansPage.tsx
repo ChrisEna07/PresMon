@@ -34,7 +34,11 @@ export default function SuperPlansPage() {
   const { toast } = useToast();
   const today = todayStr();
 
-  const tenants = useLiveQuery(async () => db.tenants.toArray() as Promise<Tenant[]>, []);
+  const tenants = useLiveQuery(
+    async () =>
+      (await db.tenants.where('status').notEqual('DELETED').toArray()) as Tenant[],
+    [],
+  );
   const plans = useLiveQuery(async () => db.plans.toArray() as Promise<ServicePlan[]>, []);
 
   const [tenantId, setTenantId] = useState('');

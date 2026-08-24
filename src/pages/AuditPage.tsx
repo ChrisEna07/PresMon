@@ -205,11 +205,13 @@ export default function AuditPage() {
           >
             <option value="all">Todas las organizaciones y plataforma</option>
             <option value={PLATFORM_KEY}>Plataforma (acciones de Super Admin)</option>
-            {(tenantsList ?? []).map((t) => (
-              <option key={t.tenantId} value={t.tenantId}>
-                {t.name}
-              </option>
-            ))}
+            {(tenantsList ?? [])
+              .filter((t) => t.status !== 'DELETED')
+              .map((t) => (
+                <option key={t.tenantId} value={t.tenantId}>
+                  {t.name}
+                </option>
+              ))}
           </select>
           {orgFilter !== 'all' && (
             <span className="text-[11px] text-slate-400">

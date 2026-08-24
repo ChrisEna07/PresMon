@@ -239,7 +239,7 @@ export default function SuperAdminPage() {
         try {
           await purgeDocsFromCloud(
             (
-              ['users', 'borrowers', 'loans', 'installments', 'audit_logs', 'plans'] as const
+              ['users', 'borrowers', 'loans', 'installments', 'audit_logs', 'plans', 'loan_requests'] as const
             )
               .map((collection) => ({ collection, ids: ids[collection] ?? [] }))
               .filter((entry) => entry.ids.length > 0),

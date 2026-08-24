@@ -111,9 +111,7 @@ export async function deleteTenantCascade(tenantId: string): Promise<{
     ],
     async () => {
       await db.tenants.delete(tenantId);
-      for (const name of TENANT_TABLES) {
-        await db.table(name).where('tenantId').equals(tenantId).delete();
-      }
+      await purgeLocalTenantData(tenantId);
     },
   );
   const removed: Record<string, number> = {};
@@ -121,6 +119,16 @@ export async function deleteTenantCascade(tenantId: string): Promise<{
     removed[name] = ids[name].length;
   }
   return { removed, ids };
+}
+
+/**
+ * Borra ÚNICAMENTE los datos operativos de UNA organización (todas las
+ * consultas filtran por tenantId). La fila del tenant NO se toca.
+ */
+export async function purgeLocalTenantData(tenantId: string): Promise<void> {
+  for (const name of TENANT_TABLES) {
+    await db.table(name).where('tenantId').equals(tenantId).delete();
+  }
 }
 
 export function stamp<T extends { updatedAt: string; syncStatus: string }>(obj: T): T {
