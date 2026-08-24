@@ -163,14 +163,8 @@ export default function SuperPlansPage() {
         syncStatus: 'PENDING',
       };
       await db.plans.put(record);
-      if (existing && existing.cloudServiceIncluded !== cloudIncluded && tenant) {
-        await db.tenants.put({
-          ...tenant,
-          cloudSyncEnabled: cloudIncluded,
-          updatedAt: nowISO(),
-          syncStatus: 'PENDING',
-        });
-      }
+      // Modo online: la sincronización ya no depende de este interruptor;
+      // «Incluye servicios de nube» queda como concepto de facturación.
       await logAudit({
         tenantId: '',
         action: 'PLAN_UPDATED',
@@ -386,8 +380,8 @@ export default function SuperPlansPage() {
                 )}
               </label>
               <p className="text-[11px] text-slate-400">
-                Al guardar, este interruptor también define si la organización puede sincronizar con
-                la nube.
+                La app ahora trabaja siempre en línea: este interruptor define únicamente si se
+                factura el servicio cloud (y habilita su mensualidad).
               </p>
               <div className="rounded-xl border border-sky-200 bg-sky-50 p-3 sm:max-w-md">
                 <Label className="flex items-center gap-1.5">

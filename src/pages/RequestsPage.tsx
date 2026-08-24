@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
@@ -68,6 +68,7 @@ export default function RequestsPage() {
   const [guaranteeConfirmed, setGuaranteeConfirmed] = useState(false);
   const [working, setWorking] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [cloudRows, setCloudRows] = useState<LoanRequest[]>([]);
 
   async function fetchNewRequests() {
     if (!isSyncConfigured()) {
@@ -77,6 +78,7 @@ export default function RequestsPage() {
     setRefreshing(true);
     try {
       const r = await runSync(tenantId || undefined);
+      await loadCloudRequests();
       if (r.errors.length > 0) {
         toast(`Sincronización con errores: ${r.errors[0]}`, 'error');
       } else if (r.pulled === 0 && r.pushed === 0) {
@@ -91,7 +93,44 @@ export default function RequestsPage() {
     }
   }
 
-  const list = requests ?? [];
+  /**
+   * Lectura DIRECTA de la nube: garantiza que las solicitudes enviadas desde
+   * el portal aparezcan aunque la réplica local de esta organización esté
+   * desactualizada. La nube es la fuente autoritativa.
+   */
+  const loadCloudRequests = useCallback(async () => {
+    if (!tenantId || !isSyncConfigured()) return;
+    try {
+      const { loadFirebaseConfig } = await import('../lib/sync/firebaseConfig');
+      const cfg = loadFirebaseConfig();
+      if (!cfg) return;
+      const { initializeApp, getApps } = await import('firebase/app');
+      const { getFirestore, collection, getDocsFromServer, query, where } = await import(
+        'firebase/firestore'
+      );
+      const fs = getFirestore(getApps()[0] ?? initializeApp(cfg));
+      const snap = await getDocsFromServer(
+        query(collection(fs, 'loan_requests'), where('tenantId', '==', tenantId)),
+      );
+      const rows = snap.docs.map((d) => d.data() as unknown as LoanRequest).filter((r) => r.requestId);
+      setCloudRows(rows);
+    } catch {
+      /* sin conexión: se muestran solo las locales */
+    }
+  }, [tenantId]);
+
+  useEffect(() => {
+    void loadCloudRequests();
+  }, [loadCloudRequests]);
+
+  /** Fusión nube + local: gana la versión de la nube; se completan faltantes. */
+  const list = useMemo(() => {
+    const byId = new Map<string, LoanRequest>();
+    for (const r of requests ?? []) byId.set(r.requestId, r);
+    for (const r of cloudRows) byId.set(r.requestId, { ...byId.get(r.requestId), ...r });
+    return [...byId.values()];
+  }, [requests, cloudRows]);
+
   const pendingCount = list.filter((r) => r.status === 'PENDING').length;
 
   const filtered = useMemo(() => {
@@ -122,6 +161,26 @@ export default function RequestsPage() {
     [detailInput.principalAmount, lines],
   );
 
+  /**
+   * Sube la decisión (aprobada/rechazada) a la nube de inmediato para que el
+   * cliente la vea al instante al consultar por referencia, sin esperar el
+   * ciclo general de sincronización.
+   */
+  async function pushRequestToCloud(requestId: string): Promise<void> {
+    try {
+      const { loadFirebaseConfig } = await import('../lib/sync/firebaseConfig');
+      const cfg = loadFirebaseConfig();
+      if (!cfg) return;
+      const { initializeApp, getApps } = await import('firebase/app');
+      const { getFirestore, doc, setDoc } = await import('firebase/firestore');
+      const fs = getFirestore(getApps()[0] ?? initializeApp(cfg));
+      const fresh = await db.loan_requests.get(requestId);
+      if (fresh) await setDoc(doc(fs, 'loan_requests', requestId), { ...fresh, syncStatus: 'SYNCED' });
+    } catch {
+      /* el ciclo normal de sincronización lo subirá más tarde */
+    }
+  }
+
   async function reject(e: React.FormEvent) {
     e.preventDefault();
     if (!session || !detailTarget) return;
@@ -141,6 +200,7 @@ export default function RequestsPage() {
         updatedAt: new Date().toISOString(),
         syncStatus: 'PENDING',
       });
+      void pushRequestToCloud(detailTarget.requestId);
       await logAudit({
         tenantId,
         action: 'LOAN_REQUEST_REJECTED',
@@ -267,6 +327,7 @@ export default function RequestsPage() {
           updatedAt: nowIso,
           syncStatus: 'PENDING',
         });
+        void pushRequestToCloud(detailTarget.requestId);
       }
 
       await logAudit({

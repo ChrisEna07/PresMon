@@ -6,6 +6,7 @@ import {
   CalendarClock,
   Calculator,
   ClipboardList,
+  Cloud,
   CloudUpload,
   HandCoins,
   LayoutDashboard,
@@ -83,7 +84,25 @@ export default function Layout() {
 
   const [bannerDismissedFor, setBannerDismissedFor] = useState('');
   const [noticeDismissedAt, setNoticeDismissedAt] = useState('');
+  const [cloudDismissedFor, setCloudDismissedFor] = useState('');
   const showPlanBanner = !!duePlanItem && bannerDismissedFor !== duePlanItem.installmentId;
+
+  /** Plan con mensualidad cloud activa (cobro recurrente aparte del pago de la app). */
+  const cloudFeePlan = useLiveQuery(async () => {
+    if (!session || session.role !== 'TENANT_ADMIN' || !session.tenantId) return null;
+    const orgPlans = await db.plans.where('tenantId').equals(session.tenantId).toArray();
+    const p = orgPlans.find((x) => x.cloudServiceIncluded && (Number(x.cloudMonthlyFee) || 0) > 0);
+    return p
+      ? {
+          planId: p.planId,
+          planName: p.name,
+          fee: Number(p.cloudMonthlyFee),
+          stamp: String(p.updatedAt ?? ''),
+        }
+      : null;
+  }, [session?.userId]);
+  const showCloudFeeBanner =
+    !!cloudFeePlan && cloudDismissedFor !== `${cloudFeePlan.planId}:${cloudFeePlan.stamp}`;
 
   const activeNotice = tenantRecord?.notice;
   const showNotice =
@@ -315,6 +334,24 @@ export default function Layout() {
             </span>
             <button
               onClick={() => setBannerDismissedFor(duePlanItem.installmentId)}
+              className="ml-auto cursor-pointer rounded p-1 opacity-70 hover:opacity-100"
+              aria-label="Ocultar aviso"
+            >
+              <X size={15} />
+            </button>
+          </div>
+        )}
+
+        {showCloudFeeBanner && cloudFeePlan && (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 bg-sky-100 px-4 py-2.5 text-sm text-sky-900">
+            <Cloud size={16} className="text-sky-600" />
+            <span className="font-bold">Mensualidad de servicios cloud:</span>
+            <span>
+              {formatCOP(cloudFeePlan.fee)}/mes · cobro recurrente aparte del pago de la app · plan «
+              {cloudFeePlan.planName}»
+            </span>
+            <button
+              onClick={() => setCloudDismissedFor(`${cloudFeePlan.planId}:${cloudFeePlan.stamp}`)}
               className="ml-auto cursor-pointer rounded p-1 opacity-70 hover:opacity-100"
               aria-label="Ocultar aviso"
             >

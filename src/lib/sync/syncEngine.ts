@@ -54,22 +54,15 @@ async function getFirestore() {
   return getFirestore(app);
 }
 
-const OPERATIONAL_COLLECTIONS = new Set<string>([
-  'borrowers',
-  'loans',
-  'installments',
-  'audit_logs',
-]);
-
-async function getCloudDisabledTenants(): Promise<Set<string>> {
-  const tenants = await db.tenants.toArray();
-  return new Set(tenants.filter((t) => t.cloudSyncEnabled === false).map((t) => t.tenantId));
-}
-
+/**
+ * Modo ONLINE: todas las colecciones se sincronizan siempre en ambas
+ * direcciones. Ya no existen excepciones por organización (el antiguo
+ * interruptor de respaldo cloud quedó como dato informativo de facturación,
+ * sin efecto sobre la sincronización).
+ */
 export async function runSync(tenantId?: string): Promise<SyncResult> {
   const fs = await getFirestore();
   const result: SyncResult = { pushed: 0, pulled: 0, errors: [] };
-  const disabled = await getCloudDisabledTenants();
 
   for (const name of SYNCED_COLLECTIONS) {
     try {
@@ -78,10 +71,7 @@ export async function runSync(tenantId?: string): Promise<SyncResult> {
       const all = (await table.toArray()) as Array<BaseRecord & Record<string, unknown>>;
 
       const pending = all.filter(
-        (r) =>
-          r.syncStatus !== 'SYNCED' &&
-          (!tenantId || r.tenantId === tenantId) &&
-          !(OPERATIONAL_COLLECTIONS.has(name) && disabled.has(String(r.tenantId ?? ''))),
+        (r) => r.syncStatus !== 'SYNCED' && (!tenantId || r.tenantId === tenantId),
       );
 
       if (pending.length > 0) {
@@ -104,9 +94,6 @@ export async function runSync(tenantId?: string): Promise<SyncResult> {
       for (const d of snap.docs) {
         const remote = d.data() as (BaseRecord & Record<string, unknown>) | undefined;
         if (!remote || !remote[key]) continue;
-        if (OPERATIONAL_COLLECTIONS.has(name) && disabled.has(String(remote.tenantId ?? ''))) {
-          continue;
-        }
         const local = (await table.get(String(remote[key]))) as
           | (BaseRecord & Record<string, unknown>)
           | undefined;

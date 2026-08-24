@@ -414,8 +414,8 @@ export default function ClientPortalPage() {
   const fetchRequestsCloud = useCallback(async (tid: string, doc: string): Promise<RequestSummary[]> => {
     const fs = await getFs();
     if (!fs) return [];
-    const { collection, getDocs, query, where } = await import('firebase/firestore');
-    const snap = await getDocs(
+    const { collection, getDocsFromServer, query, where } = await import('firebase/firestore');
+    const snap = await getDocsFromServer(
       query(collection(fs, 'loan_requests'), where('tenantId', '==', tid), where('documentNumber', '==', doc)),
     );
     return snap.docs
@@ -471,8 +471,14 @@ export default function ClientPortalPage() {
     async (code: string): Promise<LookupOutcome | 'unavailable' | null> => {
       const fs = await getFs();
       if (!fs) return 'unavailable';
-      const { collection, doc, getDoc, getDocs, query, where } = await import('firebase/firestore');
-      const snap = await getDocs(query(collection(fs, 'loan_requests'), where('referenceCode', '==', code)));
+      // getDocsFromServer/getDocFromServer: ignoran la caché local del SDK
+      // para devolver el estado real más reciente (evita ver "En revisión"
+      // tras una aprobación ya registrada en la nube).
+      const { collection, doc, getDocFromServer, getDocsFromServer, query, where } =
+        await import('firebase/firestore');
+      const snap = await getDocsFromServer(
+        query(collection(fs, 'loan_requests'), where('referenceCode', '==', code)),
+      );
       const allowed = new Set(portalTenants.map((t) => t.tenantId));
       const rows = snap.docs
         .map((d) => d.data() as unknown as LoanRequest)
@@ -482,11 +488,11 @@ export default function ClientPortalPage() {
       if (!req) return null;
       const loans: LoanDetail[] = [];
       if (req.status === 'APPROVED' && req.createdLoanId) {
-        const lSnap = await getDoc(doc(fs, 'loans', req.createdLoanId));
+        const lSnap = await getDocFromServer(doc(fs, 'loans', req.createdLoanId));
         if (lSnap.exists()) {
           const loan = lSnap.data() as unknown as LoanRow;
           if (String(loan.status) !== 'CANCELLED') {
-            const iSnap = await getDocs(
+            const iSnap = await getDocsFromServer(
               query(collection(fs, 'installments'), where('loanId', '==', req.createdLoanId)),
             );
             loans.push(detailFrom(loan, iSnap.docs.map((d) => d.data() as unknown as InstRow)));
