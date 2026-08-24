@@ -136,6 +136,35 @@ export async function runSync(tenantId?: string): Promise<SyncResult> {
           result.pushed += 1;
         }
       }
+
+      /**
+       * Reconciliación de organizaciones fantasma (solo sesiones Super Admin):
+       * si una organización existe localmente como ACTIVE/SUSPENDED pero su
+       * documento NO existe en la nube, fue borrada con el método antiguo
+       * (purga sin lápida). Se marca DELETED localmente para que deje de
+       * aparecer en todos los listados.
+       */
+      if (name === 'tenants' && !tenantId) {
+        const remoteIds = new Set(
+          snap.docs.map((d) => String((d.data() as Record<string, unknown>)[key] ?? '')),
+        );
+        const locals = (await table.toArray()) as Array<
+          BaseRecord & { status?: string } & Record<string, unknown>
+        >;
+        for (const lt of locals) {
+          if (!remoteIds.has(String(lt[key]))) {
+            if (lt.syncStatus !== 'SYNCED') continue;
+            if (lt.status === 'DELETED') continue;
+            await table.put({
+              ...lt,
+              status: 'DELETED',
+              updatedAt: new Date().toISOString(),
+              syncStatus: 'SYNCED',
+            });
+            result.pulled += 1;
+          }
+        }
+      }
     } catch (err) {
       result.errors.push(`${name}: ${err instanceof Error ? err.message : String(err)}`);
     }
