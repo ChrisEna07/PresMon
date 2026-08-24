@@ -1,15 +1,48 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { CloudCheck, Globe, HardDrive, Loader2, SearchX } from 'lucide-react';
-import type { Tenant } from '../db/models';
+import {
+  BadgeCheck,
+  CheckCircle2,
+  Clock3,
+  CloudCheck,
+  FileImage,
+  Globe,
+  HardDrive,
+  Loader2,
+  SearchX,
+  ShieldAlert,
+  Upload,
+  XCircle,
+} from 'lucide-react';
+import type { DocumentType, LoanRequest, Tenant } from '../db/models';
 import { db } from '../db/db';
 import { loadFirebaseConfig } from '../lib/sync/firebaseConfig';
+import { uid } from '../lib/id';
+import { compressImageFile } from '../lib/imageSupport';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Input, Label, Select } from '../components/ui/input';
 import { FREQUENCY_LABELS } from '../lib/financialCalculations';
-import { formatCOP, formatDateShort, todayStr } from '../lib/format';
+import { formatCOP, formatDateShort, formatDateTime, todayStr } from '../lib/format';
+
+const TERMS_VERSION = 'v2026-08-1';
+
+const TERMINOS_Y_CLAUSULAS = `TÉRMINOS Y CLÁUSULAS DE LA SOLICITUD DE PRÉSTAMO
+
+1. VERACIDAD DE LA INFORMACIÓN. Declaro que los datos personales y la documentación aportada son reales, completos y me pertenecen. Sabermente falsear información puede acarrear el rechazo definitivo de la solicitud y acciones legales.
+
+2. AUTORIZACIÓN DE TRATAMIENTO DE DATOS (Ley 1581 de 2012). Autorizo al prestamista y a la plataforma PresMon by ChrizDev a recopilar, almacenar y usar mis datos personales únicamente para el estudio, otorgamiento, administración y cobro del crédito.
+
+3. NATURALEZA DE LA SOLICITUD. Enviar esta solicitud NO genera obligación de desembolso. La aprobación depende de la verificación del soporte visual aportado y del análisis del prestamista, quien puede aprobar, ajustar o rechazar sin necesidad de justificación ante mí.
+
+4. OBLIGACIÓN DE PAGO. Si mi solicitud es aprobada, me obligo a pagar el capital más los intereses según el plan de cuotas acordado, en las fechas pactadas.
+
+5. MORA. Acepto que el incumplimiento genera los intereses de mora o recargos pactados por el prestamista sobre cada cuota vencida, desde el día siguiente al vencimiento.
+
+6. COMUNICACIONES. Autorizo el contacto por llamada, SMS o WhatsApp a los números suministrados para recordatorios de pago y gestión de cobro.
+
+7. ACEPTACIÓN ELECTRÓNICA. Al marcar la casilla de aceptación y enviar la solicitud, manifiesto haber leído y aceptado íntegramente estos términos, con plena validez jurídica equivalente a mi firma manuscrita, quedando registrados fecha y hora de la aceptación.`;
 
 interface LoanDetail {
   id: string;
@@ -22,9 +55,18 @@ interface LoanDetail {
   totalInstallments: number;
 }
 
+interface RequestSummary {
+  requestId: string;
+  amountRequested: number;
+  status: LoanRequest['status'];
+  createdAt: string;
+  rejectReason?: string;
+}
+
 interface LookupOutcome {
   borrowerName: string;
   loans: LoanDetail[];
+  requests: RequestSummary[];
 }
 
 interface LoanRow {
@@ -70,6 +112,13 @@ function detailFrom(
   };
 }
 
+function requestBadgeVariant(status: LoanRequest['status']) {
+  return status === 'APPROVED' ? 'success' : status === 'REJECTED' ? 'danger' : 'info';
+}
+function requestStatusLabel(status: LoanRequest['status']) {
+  return status === 'APPROVED' ? 'Aprobada' : status === 'REJECTED' ? 'Rechazada' : 'En revisión';
+}
+
 export default function ClientPortalPage() {
   const today = todayStr();
   const cloudMode = loadFirebaseConfig() !== null;
@@ -78,6 +127,8 @@ export default function ClientPortalPage() {
     () => db.tenants.where('status').equals('ACTIVE').toArray() as Promise<Tenant[]>,
     [],
   );
+
+  const [tab, setTab] = useState<'lookup' | 'request'>('lookup');
 
   const [portalTenants, setPortalTenants] = useState<Tenant[]>([]);
   const [sourceNote, setSourceNote] = useState('');
@@ -112,20 +163,189 @@ export default function ClientPortalPage() {
     })();
   }, [cloudMode, localTenants]);
 
+  // ---------- Solicitud de crédito ----------
+  const [reqFullName, setReqFullName] = useState('');
+  const [reqDocType, setReqDocType] = useState<DocumentType>('CC');
+  const [reqDocumentNumber, setReqDocumentNumber] = useState('');
+  const [reqPhone, setReqPhone] = useState('');
+  const [reqAddress, setReqAddress] = useState('');
+  const [reqAmount, setReqAmount] = useState('');
+  const [reqNote, setReqNote] = useState('');
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [showTerms, setShowTerms] = useState(false);
+  const [supportPreview, setSupportPreview] = useState<string | null>(null);
+  const [supportFile, setSupportFile] = useState<File | null>(null);
+  const [sending, setSending] = useState(false);
+  const [sentFolio, setSentFolio] = useState<string | null>(null);
+  const [sendWarning, setSendWarning] = useState('');
+
+  async function handleSupportChange(e: React.ChangeEvent<HTMLInputElement>) {
+    setError('');
+    const f = e.target.files?.[0];
+    if (!f) return;
+    try {
+      const compressed = await compressImageFile(f);
+      setSupportPreview(compressed.dataUrl);
+      setSupportFile(f);
+    } catch (err) {
+      setSupportPreview(null);
+      setSupportFile(null);
+      setError(err instanceof Error ? err.message : 'No se pudo procesar la imagen.');
+    }
+  }
+
+  async function handleSendRequest() {
+    setError('');
+    setSentFolio(null);
+    setSendWarning('');
+    if (!tenantId) {
+      setError('Selecciona tu prestamista.');
+      return;
+    }
+    if (!reqFullName.trim() || !reqDocumentNumber.trim()) {
+      setError('Escribe tu nombre completo y número de documento.');
+      return;
+    }
+    if (reqPhone.trim().length < 7) {
+      setError('Escribe un número de teléfono válido.');
+      return;
+    }
+    const amountNum = Number(reqAmount);
+    if (!amountNum || amountNum <= 0) {
+      setError('Indica el monto que deseas solicitar.');
+      return;
+    }
+    if (!supportFile || !supportPreview) {
+      setError('Adjunta el soporte visual (foto de tu cédula o documento que respalde la solicitud).');
+      return;
+    }
+    if (!termsAccepted) {
+      setError('Debes leer y aceptar los términos y cláusulas del préstamo.');
+      return;
+    }
+
+    setSending(true);
+    try {
+      const nowIso = new Date().toISOString();
+      const requestId = uid();
+      let borrowerId: string | null = null;
+      try {
+        const localBorrower = await db.borrowers
+          .where('[tenantId+documentNumber]')
+          .equals([tenantId, reqDocumentNumber.trim()])
+          .first();
+        borrowerId = localBorrower?.borrowerId ?? null;
+      } catch {
+        /* best effort */
+      }
+
+      const record: LoanRequest = {
+        requestId,
+        tenantId,
+        borrowerId,
+        fullName: reqFullName.trim(),
+        documentType: reqDocType,
+        documentNumber: reqDocumentNumber.trim(),
+        phone: reqPhone.trim(),
+        address: reqAddress.trim(),
+        note: reqNote.trim(),
+        amountRequested: Math.round(amountNum),
+        termsAcceptedAt: nowIso,
+        termsVersion: TERMS_VERSION,
+        supportDataUrl: supportPreview,
+        supportFileName: supportFile.name,
+        status: 'PENDING',
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        syncStatus: 'PENDING',
+      };
+
+      let deliveredToCloud = false;
+      if (cloudMode) {
+        try {
+          const fs = await getFs();
+          if (fs) {
+            const { doc, setDoc } = await import('firebase/firestore');
+            await setDoc(doc(fs, 'loan_requests', requestId), { ...record, syncStatus: 'SYNCED' });
+            deliveredToCloud = true;
+          }
+        } catch {
+          deliveredToCloud = false;
+        }
+      }
+      record.syncStatus = deliveredToCloud ? 'SYNCED' : 'PENDING';
+      await db.loan_requests.put(record);
+
+      if (deliveredToCloud) {
+        setSentFolio(requestId.slice(0, 8).toUpperCase());
+      } else {
+        setSentFolio(requestId.slice(0, 8).toUpperCase());
+        setSendWarning(
+          'Tu solicitud quedó guardada, pero este dispositivo no pudo contactar la nube. Notifica a tu prestamista por WhatsApp para garantizar su revisión.',
+        );
+      }
+      // limpiar formulario
+      setReqFullName('');
+      setReqDocumentNumber('');
+      setReqPhone('');
+      setReqAddress('');
+      setReqAmount('');
+      setReqNote('');
+      setSupportFile(null);
+      setSupportPreview(null);
+      setTermsAccepted(false);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  // ---------- Consulta ----------
+  const fetchRequestsLocal = useCallback(async (tid: string, doc: string): Promise<RequestSummary[]> => {
+    const rows = (
+      await db.loan_requests.where('[tenantId+documentNumber]').equals([tid, doc]).toArray()
+    ).filter((r) => r.phone.slice(-4) === phoneLast4.trim());
+    return rows.map((r) => ({
+      requestId: r.requestId,
+      amountRequested: r.amountRequested,
+      status: r.status,
+      createdAt: r.createdAt,
+      rejectReason: r.rejectReason,
+    }));
+  }, [phoneLast4]);
+
+  const fetchRequestsCloud = useCallback(async (tid: string, doc: string): Promise<RequestSummary[]> => {
+    const fs = await getFs();
+    if (!fs) return [];
+    const { collection, getDocs, query, where } = await import('firebase/firestore');
+    const snap = await getDocs(
+      query(collection(fs, 'loan_requests'), where('tenantId', '==', tid), where('documentNumber', '==', doc)),
+    );
+    return snap.docs
+      .map((d) => d.data() as unknown as LoanRequest)
+      .filter((r) => String(r.phone ?? '').slice(-4) === phoneLast4.trim())
+      .map((r) => ({
+        requestId: r.requestId,
+        amountRequested: Number(r.amountRequested),
+        status: r.status,
+        createdAt: String(r.createdAt),
+        rejectReason: r.rejectReason,
+      }));
+  }, [phoneLast4]);
+
   const lookupLocal = useCallback(async (tid: string, doc: string): Promise<LookupOutcome | null> => {
     const borrower = await db.borrowers.where('[tenantId+documentNumber]').equals([tid, doc]).first();
     if (!borrower || borrower.phone.slice(-4) !== phoneLast4.trim()) return null;
     const loans = (await db.loans.where('borrowerId').equals(borrower.borrowerId).toArray()).filter(
       (l) => l.status !== 'CANCELLED',
     );
-    if (loans.length === 0) return { borrowerName: borrower.fullName, loans: [] };
     const detailed: LoanDetail[] = [];
     for (const loan of loans) {
       const insts = await db.installments.where('loanId').equals(loan.loanId).toArray();
       detailed.push(detailFrom(loan, insts));
     }
-    return { borrowerName: borrower.fullName, loans: detailed };
-  }, [phoneLast4]);
+    const requests = await fetchRequestsLocal(tid, doc);
+    return { borrowerName: borrower.fullName, loans: detailed, requests };
+  }, [phoneLast4, fetchRequestsLocal]);
 
   const lookupCloud = useCallback(async (tid: string, doc: string): Promise<LookupOutcome | 'unavailable' | null> => {
     const fs = await getFs();
@@ -135,20 +355,23 @@ export default function ClientPortalPage() {
     const match = bSnap.docs.map((d) => d.data() as Record<string, unknown>).find(
       (b) => String(b.documentNumber) === doc,
     );
-    if (!match) return null;
-    if (String(match.phone ?? '').slice(-4) !== phoneLast4.trim()) return null;
-    const lSnap = await getDocs(query(collection(fs, 'loans'), where('borrowerId', '==', match.borrowerId)));
-    const loanRows = lSnap.docs
-      .map((d) => d.data() as unknown as LoanRow)
-      .filter((l) => l.status !== 'CANCELLED');
-    if (loanRows.length === 0) return { borrowerName: String(match.fullName), loans: [] };
     const detailed: LoanDetail[] = [];
-    for (const loan of loanRows) {
-      const iSnap = await getDocs(query(collection(fs, 'installments'), where('loanId', '==', loan.loanId)));
-      detailed.push(detailFrom(loan, iSnap.docs.map((d) => d.data() as unknown as InstRow)));
+    let borrowerName = '';
+    if (match && String(match.phone ?? '').slice(-4) === phoneLast4.trim()) {
+      borrowerName = String(match.fullName);
+      const lSnap = await getDocs(query(collection(fs, 'loans'), where('borrowerId', '==', match.borrowerId)));
+      const loanRows = lSnap.docs
+        .map((d) => d.data() as unknown as LoanRow)
+        .filter((l) => l.status !== 'CANCELLED');
+      for (const loan of loanRows) {
+        const iSnap = await getDocs(query(collection(fs, 'installments'), where('loanId', '==', loan.loanId)));
+        detailed.push(detailFrom(loan, iSnap.docs.map((d) => d.data() as unknown as InstRow)));
+      }
     }
-    return { borrowerName: String(match.fullName), loans: detailed };
-  }, [phoneLast4]);
+    const requests = await fetchRequestsCloud(tid, doc);
+    if (!match && requests.length === 0) return null;
+    return { borrowerName, loans: detailed, requests };
+  }, [phoneLast4, fetchRequestsCloud]);
 
   async function handleSearch() {
     setError('');
@@ -173,11 +396,11 @@ export default function ClientPortalPage() {
       }
       if (outcome === 'unavailable') outcome = await lookupLocal(tenantId, documentNumber.trim());
       if (!outcome) {
-        setError('No encontramos un cliente con esos datos. Verifica documento y teléfono.');
+        setError('No encontramos registros con esos datos. Verifica documento y teléfono.');
         return;
       }
-      if (outcome.loans.length === 0) {
-        setError('No tienes préstamos activos con esta organización.');
+      if (outcome.loans.length === 0 && outcome.requests.length === 0) {
+        setError('No tienes créditos ni solicitudes registradas con esta organización.');
         return;
       }
       setResult(outcome);
@@ -196,8 +419,29 @@ export default function ClientPortalPage() {
             <Globe size={22} />
           </div>
           <h1 className="text-xl font-bold text-white">Portal del Cliente</h1>
-          <p className="text-xs text-slate-400">PresMon by ChrizDev · consulta tu crédito</p>
+          <p className="text-xs text-slate-400">PresMon by ChrizDev · consulta y solicita tu crédito</p>
         </div>
+
+        {portalTenants.length > 0 && (
+          <div className="mb-4 grid grid-cols-2 gap-2">
+            <button
+              onClick={() => setTab('lookup')}
+              className={`cursor-pointer rounded-xl px-3 py-2 text-sm font-semibold transition-colors ${
+                tab === 'lookup' ? 'bg-emerald-500 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+            >
+              Consultar mi crédito
+            </button>
+            <button
+              onClick={() => setTab('request')}
+              className={`cursor-pointer rounded-xl px-3 py-2 text-sm font-semibold transition-colors ${
+                tab === 'request' ? 'bg-emerald-500 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+            >
+              Solicitar préstamo
+            </button>
+          </div>
+        )}
 
         {portalTenants.length === 0 ? (
           <Card>
@@ -210,7 +454,7 @@ export default function ClientPortalPage() {
               </p>
             </CardContent>
           </Card>
-        ) : (
+        ) : tab === 'lookup' ? (
           <>
             <Card>
               <CardHeader>
@@ -264,9 +508,11 @@ export default function ClientPortalPage() {
 
             {result && (
               <div className="mt-4 space-y-3">
-                <p className="text-center text-sm text-slate-300">
-                  Hola, <strong>{result.borrowerName}</strong>. Estos son tus créditos:
-                </p>
+                {result.borrowerName && (
+                  <p className="text-center text-sm text-slate-300">
+                    Hola, <strong>{result.borrowerName}</strong>. Estos son tus créditos:
+                  </p>
+                )}
                 {result.loans.map((l) => (
                   <Card key={l.id}>
                     <CardContent className="space-y-2 py-4">
@@ -304,9 +550,232 @@ export default function ClientPortalPage() {
                     </CardContent>
                   </Card>
                 ))}
+
+                {result.requests.length > 0 && (
+                  <>
+                    <p className="pt-2 text-center text-sm text-slate-300">Tus solicitudes:</p>
+                    {[...result.requests]
+                      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+                      .map((r) => (
+                        <Card key={r.requestId}>
+                          <CardContent className="space-y-2 py-4">
+                            <div className="flex items-center justify-between">
+                              <Badge variant={requestBadgeVariant(r.status)}>
+                                {r.status === 'APPROVED' ? (
+                                  <BadgeCheck size={11} />
+                                ) : r.status === 'REJECTED' ? (
+                                  <XCircle size={11} />
+                                ) : (
+                                  <Clock3 size={11} />
+                                )}
+                                {requestStatusLabel(r.status)}
+                              </Badge>
+                              <span className="text-[10px] text-slate-400">
+                                Folio {r.requestId.slice(0, 8).toUpperCase()}
+                              </span>
+                            </div>
+                            <div className="flex justify-between text-sm">
+                              <span className="text-slate-500">Monto solicitado</span>
+                              <strong>{formatCOP(r.amountRequested)}</strong>
+                            </div>
+                            <div className="flex justify-between text-sm">
+                              <span className="text-slate-500">Enviada</span>
+                              <span className="text-xs">{formatDateTime(r.createdAt)}</span>
+                            </div>
+                            {r.status === 'APPROVED' && (
+                              <p className="flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-2 text-[11px] text-emerald-700">
+                                <CheckCircle2 size={12} /> ¡Crédito aprobado! Tu prestamista coordinará
+                                el desembolso contigo.
+                              </p>
+                            )}
+                            {r.status === 'REJECTED' && (
+                              <p className="flex items-start gap-1.5 rounded-lg bg-red-50 px-3 py-2 text-[11px] text-red-600">
+                                <ShieldAlert size={12} className="mt-0.5 shrink-0" />
+                                {r.rejectReason
+                                  ? `Motivo: ${r.rejectReason}`
+                                  : 'Tu solicitud no fue aprobada. Contacta a tu prestamista.'}
+                              </p>
+                            )}
+                          </CardContent>
+                        </Card>
+                      ))}
+                  </>
+                )}
               </div>
             )}
           </>
+        ) : (
+          <Card>
+            <CardHeader>
+              <CardTitle>Solicitud de préstamo</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {sentFolio && (
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+                  <p className="flex items-center gap-1.5 font-bold">
+                    <CheckCircle2 size={15} /> Solicitud enviada · Folio {sentFolio}
+                  </p>
+                  <p className="mt-1 text-xs leading-relaxed">
+                    Tu prestamista revisará tu soporte y te responderá. Puedes consultar el estado
+                    aquí mismo con tu documento y teléfono (pestaña «Consultar mi crédito»).
+                  </p>
+                </div>
+              )}
+
+              <div>
+                <Label>Tu prestamista</Label>
+                <Select value={tenantId} onChange={(e) => setTenantId(e.target.value)}>
+                  <option value="">— Selecciona —</option>
+                  {portalTenants.map((t) => (
+                    <option key={t.tenantId} value={t.tenantId}>
+                      {t.name}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div className="col-span-1">
+                  <Label>Tipo</Label>
+                  <Select value={reqDocType} onChange={(e) => setReqDocType(e.target.value as DocumentType)}>
+                    <option value="CC">CC</option>
+                    <option value="CE">CE</option>
+                    <option value="TI">TI</option>
+                    <option value="NIT">NIT</option>
+                    <option value="PAS">Pasaporte</option>
+                  </Select>
+                </div>
+                <div className="col-span-2">
+                  <Label>Número de documento</Label>
+                  <Input
+                    value={reqDocumentNumber}
+                    onChange={(e) => setReqDocumentNumber(e.target.value)}
+                    placeholder="1020304050"
+                  />
+                </div>
+              </div>
+              <div>
+                <Label>Nombre completo</Label>
+                <Input
+                  value={reqFullName}
+                  onChange={(e) => setReqFullName(e.target.value)}
+                  placeholder="Como aparece en tu documento"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <Label>Teléfono (WhatsApp)</Label>
+                  <Input
+                    value={reqPhone}
+                    onChange={(e) => setReqPhone(e.target.value)}
+                    inputMode="tel"
+                    placeholder="3101234567"
+                  />
+                </div>
+                <div>
+                  <Label>Monto solicitado</Label>
+                  <Input
+                    value={reqAmount}
+                    onChange={(e) => setReqAmount(e.target.value)}
+                    inputMode="numeric"
+                    placeholder="500000"
+                  />
+                </div>
+              </div>
+              <div>
+                <Label>Dirección</Label>
+                <Input
+                  value={reqAddress}
+                  onChange={(e) => setReqAddress(e.target.value)}
+                  placeholder="Calle 45 # 12-30"
+                />
+              </div>
+              <div>
+                <Label>¿Para qué necesitas el crédito?</Label>
+                <Input
+                  value={reqNote}
+                  onChange={(e) => setReqNote(e.target.value)}
+                  placeholder="Ej: capital de trabajo para mi tienda"
+                />
+              </div>
+
+              <div>
+                <Label>Soporte visual *</Label>
+                <label className="flex cursor-pointer flex-col items-center gap-1.5 rounded-xl border-2 border-dashed border-slate-300 px-3 py-4 text-center transition-colors hover:border-emerald-400 hover:bg-emerald-50/40">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                    onChange={(e) => void handleSupportChange(e)}
+                  />
+                  {supportPreview ? (
+                    <>
+                      <img src={supportPreview} alt="Soporte adjunto" className="max-h-36 rounded-lg" />
+                      <span className="text-[11px] font-medium text-emerald-600">
+                        Toca para cambiar la imagen
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <FileImage size={22} className="text-slate-400" />
+                      <span className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
+                        <Upload size={12} /> Foto de tu cédula o documento de respaldo
+                      </span>
+                      <span className="text-[10px] text-slate-400">
+                        JPG/PNG · se comprime automáticamente
+                      </span>
+                    </>
+                  )}
+                </label>
+              </div>
+
+              <div className="rounded-xl bg-slate-50 p-3">
+                <button
+                  type="button"
+                  onClick={() => setShowTerms((v) => !v)}
+                  className="w-full cursor-pointer text-left text-xs font-bold text-sky-700 underline-offset-2 hover:underline"
+                >
+                  {showTerms ? '▲ Ocultar' : '▼ Leer'} Términos y Cláusulas del Préstamo ({TERMS_VERSION})
+                </button>
+                {showTerms && (
+                  <pre className="mt-2 max-h-56 overflow-y-auto rounded-lg bg-white p-3 text-[10px] leading-relaxed whitespace-pre-wrap text-slate-600">
+                    {TERMINOS_Y_CLAUSULAS}
+                  </pre>
+                )}
+                <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={termsAccepted}
+                    onChange={(e) => setTermsAccepted(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 shrink-0 accent-emerald-600"
+                  />
+                  <span>
+                    He leído y <strong>ACEPTO los términos y cláusulas</strong> del préstamo. Mi
+                    aceptación quedará registrada con fecha y hora.
+                  </span>
+                </label>
+              </div>
+
+              {error && (
+                <p className="rounded-lg bg-red-50 px-3 py-2 text-xs font-medium text-red-600">{error}</p>
+              )}
+              <Button className="w-full" onClick={() => void handleSendRequest()} disabled={sending}>
+                {sending ? <Loader2 size={15} className="animate-spin" /> : null}
+                {sending ? 'Enviando…' : 'Enviar solicitud'}
+              </Button>
+              {sendWarning && (
+                <p className="rounded-lg bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-700">
+                  {sendWarning}
+                </p>
+              )}
+              {!cloudMode && (
+                <p className="text-center text-[10px] text-slate-400">
+                  Esta organización opera sin nube activa: la solicitud solo será visible en este
+                  dispositivo.
+                </p>
+              )}
+            </CardContent>
+          </Card>
         )}
 
         <p className="mt-5 text-center text-[11px] text-slate-500">

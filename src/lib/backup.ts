@@ -12,6 +12,7 @@ export interface BackupDump {
   installments: unknown[];
   audit_logs: unknown[];
   plans: ServicePlan[];
+  loan_requests: unknown[];
 }
 
 const BACKUP_TABLES = [
@@ -22,6 +23,7 @@ const BACKUP_TABLES = [
   'installments',
   'audit_logs',
   'plans',
+  'loan_requests',
 ] as const;
 
 export async function buildBackupDump(): Promise<BackupDump> {
@@ -36,6 +38,7 @@ export async function buildBackupDump(): Promise<BackupDump> {
     installments: await db.installments.toArray(),
     audit_logs: await db.audit_logs.toArray(),
     plans: await db.plans.toArray(),
+    loan_requests: await db.loan_requests.toArray(),
   };
 }
 

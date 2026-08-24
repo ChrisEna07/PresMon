@@ -17,6 +17,9 @@ export type AuditAction =
   | 'BORROWER_CREATED'
   | 'BORROWER_UPDATED'
   | 'BORROWER_DELETED'
+  | 'LOAN_REQUEST_CREATED'
+  | 'LOAN_REQUEST_APPROVED'
+  | 'LOAN_REQUEST_REJECTED'
   | 'LOAN_CANCELLED'
   | 'TENANT_CREATED'
   | 'TENANT_UPDATED'
@@ -121,6 +124,36 @@ export interface Loan extends BaseRecord {
   status: LoanStatus;
   startDate: string;
   contractPdfBlobRef: string | null;
+}
+
+export type LoanRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+
+/** Solicitud de crédito enviada por un cliente desde el portal público. */
+export interface LoanRequest extends BaseRecord {
+  requestId: string;
+  tenantId: string;
+  borrowerId: string | null;
+  fullName: string;
+  documentType: DocumentType;
+  documentNumber: string;
+  phone: string;
+  address: string;
+  note: string;
+  amountRequested: number;
+  /** Momento exacto en que el cliente aceptó términos y cláusulas. */
+  termsAcceptedAt: string;
+  /** Versión del texto de términos aceptado (trazabilidad legal). */
+  termsVersion: string;
+  clientIp?: string;
+  /** Soporte visual comprimido (JPEG base64) para verificación. */
+  supportDataUrl?: string;
+  supportFileName?: string;
+  status: LoanRequestStatus;
+  decidedByUid?: string;
+  decidedByName?: string;
+  decidedAt?: string;
+  rejectReason?: string;
+  createdLoanId?: string;
 }
 
 export interface Installment extends BaseRecord {

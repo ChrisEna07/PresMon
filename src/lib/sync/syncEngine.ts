@@ -10,6 +10,7 @@ const SYNCED_COLLECTIONS = [
   'installments',
   'audit_logs',
   'plans',
+  'loan_requests',
 ] as const;
 
 type SyncedCollection = (typeof SYNCED_COLLECTIONS)[number];

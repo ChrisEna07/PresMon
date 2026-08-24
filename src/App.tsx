@@ -17,6 +17,7 @@ import SettingsPage from './pages/SettingsPage';
 import SuperAdminPage from './pages/SuperAdminPage';
 import SuperPlansPage from './pages/SuperPlansPage';
 import ClientPortalPage from './pages/ClientPortalPage';
+import RequestsPage from './pages/RequestsPage';
 import { seedDatabase } from './db/db';
 import { runMoraEvaluation, startDayWatch } from './lib/moraEngine';
 import { isSyncConfigured, runSync, setLastSync } from './lib/sync/syncEngine';
@@ -99,6 +100,7 @@ export default function App() {
               <Route path="loans/new" element={<NewLoanPage />} />
               <Route path="loans/:id" element={<LoanDetailPage />} />
               <Route path="collections" element={<CollectionsPage />} />
+              <Route path="requests" element={<RequestsPage />} />
               <Route path="simulator" element={<SimulatorPage />} />
               <Route path="audit" element={<AuditPage />} />
               <Route path="settings" element={<SettingsPage />} />
