@@ -8,6 +8,7 @@ import {
   Clock3,
   FileImage,
   HandCoins,
+  Link2,
   Loader2,
   Package,
   RefreshCw,
@@ -54,6 +55,10 @@ export default function RequestsPage() {
         : Promise.resolve([] as LoanRequest[]),
     [tenantId],
   );
+  const tenant = useLiveQuery(
+    () => (tenantId ? db.tenants.get(tenantId) : undefined),
+    [tenantId],
+  );
 
   const [filter, setFilter] = useState<Filter>('PENDING');
   const [detailTarget, setDetailTarget] = useState<LoanRequest | null>(null);
@@ -90,6 +95,38 @@ export default function RequestsPage() {
       toast('No se pudo conectar con la nube.', 'error');
     } finally {
       setRefreshing(false);
+    }
+  }
+
+  /**
+   * Enlace EXCLUSIVO de esta organización para que los clientes soliciten
+   * crédito desde su celular (y consulten su saldo). Se comparte por WhatsApp.
+   */
+  function sharePortalInvite() {
+    if (!tenantId) return;
+    if (tenant && tenant.clientPortalEnabled === false) {
+      toast('El portal de clientes está deshabilitado para tu organización. Solicita su activación a ChrizDev.', 'error');
+      return;
+    }
+    const url = `${window.location.origin}/portal?t=${tenantId}`;
+    const org = tenant?.name ?? 'nuestra organización';
+    const text = encodeURIComponent(
+      `¿Necesitas un préstamo? Solicítalo desde tu celular en este enlace (${org}): ${url} — también puedes consultar el estado y saldo de tu crédito las 24 horas con tu documento y los últimos 4 dígitos de tu teléfono.`,
+    );
+    window.open(`https://wa.me/?text=${text}`, '_blank');
+  }
+
+  async function copyPortalInvite() {
+    if (!tenantId) return;
+    if (tenant && tenant.clientPortalEnabled === false) {
+      toast('El portal de clientes está deshabilitado para tu organización. Solicita su activación a ChrizDev.', 'error');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(`${window.location.origin}/portal?t=${tenantId}`);
+      toast('Enlace copiado. Envíalo a tus clientes para que soliciten su crédito.', 'success');
+    } catch {
+      toast(`Copia manual: ${window.location.origin}/portal?t=${tenantId}`, 'info');
     }
   }
 
@@ -366,10 +403,15 @@ export default function RequestsPage() {
         title="Solicitudes de crédito"
         description="Clientes que solicitaron un préstamo desde el portal · verifica el soporte y aprueba el desembolso"
         actions={
-          <Button variant="outline" size="sm" onClick={() => void fetchNewRequests()} disabled={refreshing}>
-            {refreshing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-            Buscar solicitudes nuevas
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" size="sm" onClick={sharePortalInvite} title="Enviar a tus clientes el enlace para solicitar crédito">
+              <Link2 size={14} /> Enlace para clientes
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => void fetchNewRequests()} disabled={refreshing}>
+              {refreshing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+              Buscar solicitudes nuevas
+            </Button>
+          </div>
         }
       />
 
