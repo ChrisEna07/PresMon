@@ -153,7 +153,7 @@ export default function LoginPage() {
       </div>
 
       <p className="absolute bottom-4 text-[10px] text-slate-700">
-        PresMon v1.0 · Offline-first · Tus datos se guardan en este dispositivo
+        PresMon v1.2 · Tus datos se respaldan en la nube y en este dispositivo
       </p>
     </div>
   );

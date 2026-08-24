@@ -168,6 +168,7 @@ export default function RequestsPage() {
    */
   async function pushRequestToCloud(requestId: string): Promise<void> {
     try {
+      if (!isSyncConfigured()) return;
       const { loadFirebaseConfig } = await import('../lib/sync/firebaseConfig');
       const cfg = loadFirebaseConfig();
       if (!cfg) return;

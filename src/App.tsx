@@ -17,6 +17,7 @@ import SettingsPage from './pages/SettingsPage';
 import SuperAdminPage from './pages/SuperAdminPage';
 import SuperPlansPage from './pages/SuperPlansPage';
 import ClientPortalPage from './pages/ClientPortalPage';
+import OfflineEditionPage from './pages/OfflineEditionPage';
 import RequestsPage from './pages/RequestsPage';
 import { seedDatabase } from './db/db';
 import { runMoraEvaluation, startDayWatch } from './lib/moraEngine';
@@ -87,6 +88,7 @@ export default function App() {
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/portal" element={<ClientPortalPage />} />
+            <Route path="/edicion-offline" element={<OfflineEditionPage />} />
             <Route
               element={
                 <RequireAuth>

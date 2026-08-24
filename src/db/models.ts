@@ -43,6 +43,13 @@ export interface TenantNotice {
   updatedAt: string;
 }
 
+export interface OfflineLicenseInfo {
+  /** Clave de activación (OFF-XXXXXX). */
+  key: string;
+  issuedAt: string;
+  issuedByName: string;
+}
+
 export interface Tenant extends BaseRecord {
   tenantId: string;
   name: string;
@@ -55,11 +62,17 @@ export interface Tenant extends BaseRecord {
    */
   remoteControlEnabled?: boolean;
   /** Respaldo en la nube y sincronización multi-dispositivo. Activo por defecto. */
+  /** @deprecated Legado del modo híbrido: ya no afecta la sincronización (siempre activa). */
   cloudSyncEnabled?: boolean;
   /** Bloqueo total de la app hasta que pague (canal de control). */
   appLocked?: boolean;
   /** Aviso inyectado por ChrizDev que se muestra en su panel. */
   notice?: TenantNotice;
+  /**
+   * Licencia de la EDICIÓN OFFLINE (pago único confirmado por ChrizDev).
+   * Sin licencia no existe enlace de instalación offline.
+   */
+  offlineLicense?: OfflineLicenseInfo;
 }
 
 export interface UserAccount extends BaseRecord {
@@ -97,6 +110,10 @@ export interface ServicePlan extends BaseRecord {
   appTotalAmount?: number;
   /** Mensualidad recurrente de servicios cloud, independiente del pago de la app (0 = sin cobro). */
   cloudMonthlyFee?: number;
+  /** Día del mes (1-28) en que vence la mensualidad cloud. */
+  cloudBillingDay?: number;
+  /** Fecha (YYYY-MM-DD) hasta la cual está pagada la mensualidad cloud. */
+  cloudPaidThrough?: string;
   notes?: string;
   installments: PlanInstallment[];
 }

@@ -4,7 +4,6 @@ import {
   BadgeCheck,
   CalendarPlus,
   Cloud,
-  CloudOff,
   Plus,
   Save,
   Trash2,
@@ -14,7 +13,7 @@ import type { AppPaymentMode, PlanInstallment, ServicePlan, Tenant } from '../db
 import { db, nowISO } from '../db/db';
 import { useAuth } from '../store/auth';
 import { uid } from '../lib/id';
-import { formatCOP, formatDateShort, todayStr, addDaysStr } from '../lib/format';
+import { formatCOP, formatDateShort, todayStr, addDaysStr, nextMonthlyDue } from '../lib/format';
 import { logAudit } from '../lib/auditLogger';
 import { isSyncConfigured, runSync } from '../lib/sync/syncEngine';
 import { PageHeader } from '../components/misc';
@@ -40,10 +39,10 @@ export default function SuperPlansPage() {
 
   const [tenantId, setTenantId] = useState('');
   const [name, setName] = useState('');
-  const [cloudIncluded, setCloudIncluded] = useState(true);
   const [payMode, setPayMode] = useState<AppPaymentMode>('INSTALLMENTS');
   const [appTotal, setAppTotal] = useState('');
   const [cloudFee, setCloudFee] = useState('');
+  const [cloudBillingDay, setCloudBillingDay] = useState('1');
   const [notes, setNotes] = useState('');
   const [rows, setRows] = useState<PlanInstallment[]>([]);
   const [dirty, setDirty] = useState(false);
@@ -59,14 +58,40 @@ export default function SuperPlansPage() {
     return map;
   }, [plans]);
 
+  const existingPlanForOrg = tenantId ? planByTenant.get(tenantId) : undefined;
+  const paidThroughDate = existingPlanForOrg?.cloudPaidThrough || '';
+  const nextCloudDue = useMemo(
+    () => nextMonthlyDue(Number(cloudBillingDay) || 1, paidThroughDate),
+    [cloudBillingDay, paidThroughDate],
+  );
+
+  /** Marca el ciclo actual de la mensualidad cloud como pagado. */
+  async function markCloudPeriodPaid() {
+    if (!tenantId) return;
+    if (!existingPlanForOrg) {
+      toast('Guarda primero el plan con la mensualidad configurada.', 'info');
+      return;
+    }
+    const due = nextMonthlyDue(Number(cloudBillingDay) || 1, existingPlanForOrg.cloudPaidThrough);
+    await db.plans.put({
+      ...existingPlanForOrg,
+      cloudPaidThrough: due,
+      updatedAt: nowISO(),
+      syncStatus: 'PENDING',
+    });
+    pushToCloud();
+    setDirty(true);
+    toast(`Mensualidad registrada como pagada hasta el ${formatDateShort(due)}.`, 'success');
+  }
+
   function selectOrg(id: string) {
     setTenantId(id);
     const existing = id ? planByTenant.get(id) : undefined;
     setName(existing?.name ?? '');
-    setCloudIncluded(existing ? existing.cloudServiceIncluded : true);
     setPayMode(existing?.appPaymentMode ?? 'INSTALLMENTS');
     setAppTotal(existing?.appTotalAmount != null ? String(existing.appTotalAmount) : '');
     setCloudFee(existing?.cloudMonthlyFee != null ? String(existing.cloudMonthlyFee) : '');
+    setCloudBillingDay(String(Number(existing?.cloudBillingDay) || 1));
     setNotes(existing?.notes ?? '');
     setRows(
       existing
@@ -144,13 +169,15 @@ export default function SuperPlansPage() {
         planId: existing?.planId ?? uid(),
         tenantId,
         name: name.trim(),
-        cloudServiceIncluded: cloudIncluded,
+        cloudServiceIncluded: true,
         appPaymentMode: payMode,
         appTotalAmount:
           payMode === 'FULL'
             ? Math.max(0, Math.round(Number(appTotal) || 0))
             : rows.reduce((s, r) => s + (Number(r.amount) || 0), 0),
         cloudMonthlyFee: Math.max(0, Math.round(Number(cloudFee) || 0)),
+        cloudBillingDay: Math.min(28, Math.max(1, Number(cloudBillingDay) || 1)),
+        cloudPaidThrough: existing?.cloudPaidThrough,
         notes: notes.trim(),
         installments: [...rows]
           .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
@@ -178,6 +205,8 @@ export default function SuperPlansPage() {
           modoPagoApp: record.appPaymentMode === 'FULL' ? 'Contado' : 'Por cuotas',
           valorApp: record.appTotalAmount,
           mensualidadCloud: record.cloudMonthlyFee,
+          diaCobroCloud: record.cloudBillingDay,
+          pagadaHasta: record.cloudPaidThrough ?? '—',
           cuotasApp: record.installments.length,
         },
       });
@@ -217,7 +246,7 @@ export default function SuperPlansPage() {
             <option value="">— Selecciona una organización —</option>
             {(tenants ?? []).map((t) => (
               <option key={t.tenantId} value={t.tenantId}>
-                {t.name} {t.cloudSyncEnabled === false ? '(offline)' : ''}
+                {t.name}
               </option>
             ))}
           </Select>
@@ -246,15 +275,11 @@ export default function SuperPlansPage() {
               <p className="flex items-center gap-1 text-[11px] font-semibold tracking-wide text-sky-600 uppercase">
                 <Cloud size={12} /> Mensualidad cloud
               </p>
-              <p className="mt-1 font-bold text-sky-700">
-                {cloudIncluded ? formatCOP(summary.cloudFeeNum) : 'Sin nube'}
-              </p>
+              <p className="mt-1 font-bold text-sky-700">{formatCOP(summary.cloudFeeNum)}</p>
               <p className="mt-0.5 text-[10px] font-medium text-sky-500">
-                {cloudIncluded && summary.cloudFeeNum > 0
-                  ? `${formatCOP(summary.cloudFeeNum * 12)} al año`
-                  : cloudIncluded
-                    ? 'Sin cobro mensual'
-                    : 'App offline'}
+                {summary.cloudFeeNum > 0
+                  ? `Vence día ${Number(cloudBillingDay) || 1} · ${formatCOP(summary.cloudFeeNum * 12)} al año`
+                  : 'Sin cobro mensual'}
               </p>
             </div>
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
@@ -294,7 +319,7 @@ export default function SuperPlansPage() {
                       setName(e.target.value);
                       setDirty(true);
                     }}
-                    placeholder="Ej: App offline + mantenimiento anual"
+                    placeholder="Ej: App + mensualidad cloud"
                   />
                 </div>
                 <div>
@@ -359,30 +384,6 @@ export default function SuperPlansPage() {
                   </p>
                 </div>
               )}
-              <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 sm:max-w-md">
-                <input
-                  type="checkbox"
-                  checked={cloudIncluded}
-                  onChange={(e) => {
-                    setCloudIncluded(e.target.checked);
-                    setDirty(true);
-                  }}
-                  className="h-4 w-4 accent-emerald-600"
-                />
-                {cloudIncluded ? (
-                  <span className="flex items-center gap-1.5">
-                    <Cloud size={15} className="text-emerald-600" /> Incluye servicios de nube
-                  </span>
-                ) : (
-                  <span className="flex items-center gap-1.5">
-                    <CloudOff size={15} className="text-slate-400" /> Sin servicios de nube (app offline)
-                  </span>
-                )}
-              </label>
-              <p className="text-[11px] text-slate-400">
-                La app ahora trabaja siempre en línea: este interruptor define únicamente si se
-                factura el servicio cloud (y habilita su mensualidad).
-              </p>
               <div className="rounded-xl border border-sky-200 bg-sky-50 p-3 sm:max-w-md">
                 <Label className="flex items-center gap-1.5">
                   <Cloud size={14} className="text-sky-600" /> Mensualidad de servicios cloud
@@ -394,10 +395,39 @@ export default function SuperPlansPage() {
                     setDirty(true);
                   }}
                   inputMode="numeric"
-                  disabled={!cloudIncluded}
-                  placeholder={cloudIncluded ? 'Ej: 30000 (0 = sin cobro mensual)' : 'Requiere servicios cloud activos'}
-                  className={cloudIncluded ? undefined : 'cursor-not-allowed opacity-60'}
+                  placeholder="Ej: 30000 (0 = sin cobro mensual)"
                 />
+                <div className="mt-2 grid grid-cols-2 items-end gap-2">
+                  <div>
+                    <Label>Día de pago mensual</Label>
+                    <Select
+                      value={cloudBillingDay}
+                      onChange={(e) => {
+                        setCloudBillingDay(e.target.value);
+                        setDirty(true);
+                      }}
+                    >
+                      {Array.from({ length: 28 }, (_, i) => String(i + 1)).map((d) => (
+                        <option key={d} value={d}>
+                          Día {d} de cada mes
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                  <Button
+                    variant="outline"
+                    onClick={() => void markCloudPeriodPaid()}
+                    disabled={!existingPlanForOrg}
+                  >
+                    <BadgeCheck size={14} /> Registrar pago del mes
+                  </Button>
+                </div>
+                {nextCloudDue && (
+                  <p className="mt-1.5 text-[11px] font-semibold text-sky-800">
+                    Próximo vencimiento: {formatDateShort(nextCloudDue)}
+                    {paidThroughDate ? ` · pagada hasta ${formatDateShort(paidThroughDate)}` : ''}
+                  </p>
+                )}
                 <p className="mt-1 text-[11px] leading-relaxed text-sky-700">
                   Cobro recurrente mensual por nube, respaldos y soporte. Es{' '}
                   <strong>independiente del pago de la app</strong>: se cobra aparte aunque la app

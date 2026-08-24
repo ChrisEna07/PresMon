@@ -4,6 +4,7 @@ import {
   Building2,
   Copy,
   Globe,
+  HardDriveDownload,
   KeyRound,
   Link2,
   Lock,
@@ -31,6 +32,7 @@ import { TBody, TD, TH, THead, TR, TableWrap } from '../components/ui/table';
 import { useToast } from '../components/ui/toast';
 import { isSyncConfigured, purgeDocsFromCloud, runSync } from '../lib/sync/syncEngine';
 import { exportBackup } from '../lib/backup';
+import { generateLicenseKey, offlineLinkFor } from '../lib/offlineEdition';
 
 function pushToCloud(): void {
   void runSync().catch(() => {
@@ -78,7 +80,8 @@ export default function SuperAdminPage() {
   const [deleteCounts, setDeleteCounts] = useState({ users: 0, borrowers: 0, loans: 0, installments: 0 });
   const [deleting, setDeleting] = useState(false);
   const [portalLinkTarget, setPortalLinkTarget] = useState<Tenant | null>(null);
-  const [createCloud, setCreateCloud] = useState(true);
+  const [offlineTargetId, setOfflineTargetId] = useState('');
+  const [offlinePaid, setOfflinePaid] = useState(false);
   const [noticeTarget, setNoticeTarget] = useState<Tenant | null>(null);
   const [noticeText, setNoticeText] = useState('');
   const [noticeLevel, setNoticeLevel] = useState<NoticeLevel>('info');
@@ -103,6 +106,62 @@ export default function SuperAdminPage() {
     const org = portalLinkTarget?.name ?? '';
     const text = encodeURIComponent(
       `Consulta el estado de tu crédito las 24 horas en este enlace (${org}): ${url} — necesitas tu número de documento y los últimos 4 dígitos de tu teléfono. ¿Buscas un préstamo? También puedes solicitarlo desde ahí.`,
+    );
+    window.open(`https://wa.me/?text=${text}`, '_blank');
+  }
+
+  const offlineTarget = useMemo(
+    () => (tenants ?? []).find((t) => t.tenantId === offlineTargetId) ?? null,
+    [tenants, offlineTargetId],
+  );
+
+  async function issueOfflineLicense() {
+    if (!session || !offlineTarget) return;
+    if (!offlinePaid) {
+      toast('Confirma el pago TOTAL de la licencia antes de generar el enlace.', 'error');
+      return;
+    }
+    await saveTenant({
+      ...offlineTarget,
+      offlineLicense: {
+        key: generateLicenseKey(),
+        issuedAt: new Date().toISOString(),
+        issuedByName: session.displayName,
+      },
+      updatedAt: new Date().toISOString(),
+      syncStatus: 'PENDING',
+    });
+    await logAudit({
+      tenantId: offlineTarget.tenantId,
+      actorId: session.userId,
+      actorName: session.displayName,
+      action: 'TENANT_UPDATED',
+      entityType: 'tenants',
+      entityId: offlineTarget.tenantId,
+      payloadSnapshot: {
+        campo: 'offlineLicense',
+        org: offlineTarget.name,
+        clave: 'OFF-****',
+      },
+    });
+    pushToCloud();
+    toast('Licencia generada. Envíale el enlace al cliente.', 'success');
+  }
+
+  async function copyOfflineLink() {
+    try {
+      await navigator.clipboard.writeText(offlineLinkFor(offlineTarget!));
+      toast('Enlace de instalación copiado.', 'success');
+    } catch {
+      toast(`Copia manual: ${offlineLinkFor(offlineTarget!)}`, 'info');
+    }
+  }
+
+  function shareOfflineByWhatsApp() {
+    const url = offlineLinkFor(offlineTarget!);
+    const org = offlineTarget?.name ?? '';
+    const text = encodeURIComponent(
+      `Tu edición OFFLINE de PresMon (${org}) está lista. Abre este enlace con internet UNA sola vez para instalar la app y tu base de datos en el dispositivo: ${url}`,
     );
     window.open(`https://wa.me/?text=${text}`, '_blank');
   }
@@ -215,33 +274,6 @@ export default function SuperAdminPage() {
     } finally {
       setDeleting(false);
     }
-  }
-
-  async function toggleCloudSync(tenant: Tenant) {
-    if (!session) return;
-    const next = tenant.cloudSyncEnabled === false;
-    await saveTenant({
-      ...tenant,
-      cloudSyncEnabled: next,
-      updatedAt: new Date().toISOString(),
-      syncStatus: 'PENDING',
-    });
-    await logAudit({
-      tenantId: '',
-      action: 'TENANT_UPDATED',
-      actorId: session.userId,
-      actorName: session.displayName,
-      entityId: tenant.tenantId,
-      entityType: 'tenants',
-      payloadSnapshot: { campo: 'cloudSyncEnabled', valor: next },
-    });
-    toast(
-      next
-        ? `Respaldo en la nube ACTIVADO para «${tenant.name}».`
-        : `Respaldo en la nube DESACTIVADO para «${tenant.name}». Sus datos dejarán de sincronizar.`,
-      next ? 'success' : 'warning',
-    );
-    pushToCloud();
   }
 
   async function toggleRemoteControl(tenant: Tenant) {
@@ -370,7 +402,6 @@ export default function SuperAdminPage() {
       adminUid: adminUserId,
       status: 'ACTIVE',
       clientPortalEnabled: false,
-      cloudSyncEnabled: createCloud,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       syncStatus: 'PENDING',
@@ -382,12 +413,11 @@ export default function SuperAdminPage() {
       actorName: session.displayName,
       entityId: tenantId,
       entityType: 'tenants',
-      payloadSnapshot: { nombre: newName.trim(), admin: uname, cloudSyncEnabled: createCloud },
+      payloadSnapshot: { nombre: newName.trim(), admin: uname },
     });
     setNewName('');
     setNewUsername('');
     setNewPassword('');
-    setCreateCloud(true);
     setCreateOpen(false);
     pushToCloud();
     toast('Organización creada y activada. Sincronizando a la nube…', 'success');
@@ -480,8 +510,9 @@ export default function SuperAdminPage() {
           <TH>Préstamos</TH>
           <TH>Creada</TH>
           <TH>Estado</TH>
-          <TH>Control cuenta</TH>
-          <TH>Respaldo cloud</TH>
+                    <TH>Control cuenta</TH>
+
+
           <TH>ENABLE_CLIENT_PORTAL</TH>
           <TH className="text-right">Acciones</TH>
         </THead>
@@ -528,18 +559,6 @@ export default function SuperAdminPage() {
                   />
                   <Badge variant={t.remoteControlEnabled !== false ? 'success' : 'muted'}>
                     {t.remoteControlEnabled !== false ? 'CTRL ON' : 'CTRL OFF'}
-                  </Badge>
-                </div>
-              </TD>
-              <TD>
-                <div className="flex items-center gap-2">
-                  <Switch
-                    checked={t.cloudSyncEnabled !== false}
-                    onChange={() => void toggleCloudSync(t)}
-                    label="Respaldo"
-                  />
-                  <Badge variant={t.cloudSyncEnabled !== false ? 'success' : 'muted'}>
-                    {t.cloudSyncEnabled !== false ? 'CLOUD' : 'OFFLINE'}
                   </Badge>
                 </div>
               </TD>
@@ -621,6 +640,22 @@ export default function SuperAdminPage() {
                   <Button
                     variant="ghost"
                     size="sm"
+                    title={
+                      t.offlineLicense
+                        ? 'Edición Offline: ver enlace de instalación'
+                        : 'Emitir licencia Edición Offline (pago único)'
+                    }
+                    onClick={() => {
+                      setOfflineTargetId(t.tenantId);
+                      setOfflinePaid(false);
+                    }}
+                  >
+                    <HardDriveDownload size={13} />{' '}
+                    <span className="hidden xl:inline">Offline</span>
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
                     title="Eliminar organización"
                     className="text-red-600 hover:bg-red-50"
                     onClick={() => void openDeleteDialog(t)}
@@ -650,16 +685,8 @@ export default function SuperAdminPage() {
           </div>
           <p className="text-[11px] text-slate-400">
             El portal de clientes se crea DESHABILITADO por defecto. Actívalo cuando lo requieras.
+            La sincronización en la nube es siempre activa para todas las organizaciones.
           </p>
-          <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700">
-            <input
-              type="checkbox"
-              checked={createCloud}
-              onChange={(e) => setCreateCloud(e.target.checked)}
-              className="h-4 w-4 accent-emerald-600"
-            />
-            Incluye servicios de nube (respaldo y sincronización multi-dispositivo)
-          </label>
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>
               Cancelar
@@ -792,6 +819,78 @@ export default function SuperAdminPage() {
               Compartir por WhatsApp
             </Button>
           </div>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={offlineTarget !== null}
+        onClose={() => setOfflineTargetId('')}
+        title={`Edición Offline · ${offlineTarget?.name ?? ''}`}
+        description="App 100% sin internet para un dispositivo: se instala una sola vez con la base de datos incluida."
+      >
+        <div className="space-y-3">
+          {offlineTarget?.offlineLicense ? (
+            <>
+              <div className="flex items-center gap-2">
+                <Input value={offlineLinkFor(offlineTarget)} readOnly className="font-mono text-xs" />
+                <Button size="sm" variant="secondary" onClick={() => void copyOfflineLink()}>
+                  <Copy size={14} /> Copiar
+                </Button>
+              </div>
+              <div className="rounded-lg bg-emerald-50 px-3 py-2 text-xs leading-relaxed text-emerald-800">
+                <p className="font-semibold">Licencia emitida</p>
+                <p>
+                  Clave <strong>{offlineTarget.offlineLicense.key}</strong> ·{' '}
+                  {formatDateTime(offlineTarget.offlineLicense.issuedAt)} por{' '}
+                  {offlineTarget.offlineLicense.issuedByName}
+                </p>
+                <p className="mt-1">
+                  El cliente abre el enlace con internet UNA sola vez: valida la licencia, descarga
+                  su base de datos y a partir de ahí la app jamás se conecta a la nube. Sin cuotas,
+                  sin control remoto.
+                </p>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setOfflineTargetId('')}>
+                  Cerrar
+                </Button>
+                <Button variant="secondary" onClick={shareOfflineByWhatsApp}>
+                  Enviar enlace por WhatsApp
+                </Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+                <p className="font-semibold">Antes de generar el enlace</p>
+                <ul className="mt-1 list-inside list-disc">
+                  <li>Pago ÚNICO de licencia (una app offline no admite mensualidades ni bloqueo remoto).</li>
+                  <li>Solo se puede instalar en UN dispositivo por enlace.</li>
+                  <li>Los datos NO se respaldan en la nube ni se sincronizan entre dispositivos.</li>
+                </ul>
+              </div>
+              <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-200 p-3 text-xs text-slate-600 hover:bg-slate-50">
+                <input
+                  type="checkbox"
+                  checked={offlinePaid}
+                  onChange={(e) => setOfflinePaid(e.target.checked)}
+                  className="mt-0.5 h-4 w-4"
+                />
+                <span>
+                  Confirmo que «{offlineTarget?.name}» ya pagó el total de la licencia Edición
+                  Offline.
+                </span>
+              </label>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setOfflineTargetId('')}>
+                  Cancelar
+                </Button>
+                <Button onClick={() => void issueOfflineLicense()} disabled={!offlinePaid}>
+                  <HardDriveDownload size={14} /> Generar enlace de instalación
+                </Button>
+              </div>
+            </>
+          )}
         </div>
       </Dialog>
 

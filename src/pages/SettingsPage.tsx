@@ -3,13 +3,16 @@ import { useNavigate } from 'react-router-dom';
 import {
   Cloud,
   CloudUpload,
+  Copy,
   DatabaseBackup,
   Info,
   KeyRound,
+  Link2,
   ShieldAlert,
   Trash2,
   Upload,
 } from 'lucide-react';
+import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/db';
 import { useAuth } from '../store/auth';
 import {
@@ -60,6 +63,34 @@ export default function SettingsPage() {
   const [resetOpen, setResetOpen] = useState(false);
   const [resetConfirmText, setResetConfirmText] = useState('');
 
+  const tenant = useLiveQuery(
+    () => (session && !isSuperAdmin ? db.tenants.get(session.tenantId) : undefined),
+    [session?.tenantId, isSuperAdmin],
+  );
+  const portalUrl =
+    session && !isSuperAdmin
+      ? `${window.location.origin}/portal?t=${session.tenantId}`
+      : '';
+
+  async function copyPortalLink() {
+    if (!portalUrl) return;
+    try {
+      await navigator.clipboard.writeText(portalUrl);
+      toast('Enlace copiado. Compártelo solo con TUS clientes.', 'success');
+    } catch {
+      toast(`Copia manual: ${portalUrl}`, 'info');
+    }
+  }
+
+  function sharePortalByWhatsApp() {
+    if (!portalUrl || !session) return;
+    const org = tenant?.name ?? 'nuestra organización';
+    const text = encodeURIComponent(
+      `Consulta el estado de tu crédito las 24 horas en este enlace (${org}): ${portalUrl} — necesitas tu número de documento y los últimos 4 dígitos de tu teléfono. ¿Buscas un préstamo? También puedes solicitarlo desde ahí.`,
+    );
+    window.open(`https://wa.me/?text=${text}`, '_blank');
+  }
+
   useEffect(() => {
     const loaded = loadFirebaseConfig();
     if (loaded) setCfg(loaded);
@@ -94,16 +125,6 @@ export default function SettingsPage() {
 
   async function handleSyncNow() {
     if (!session) return;
-    if (!isSuperAdmin && session.tenantId) {
-      const tenant = await db.tenants.get(session.tenantId);
-      if (tenant?.cloudSyncEnabled === false) {
-        toast(
-          'La sincronización en la nube está desactivada para esta organización. Contacta a ChrizDev.',
-          'warning',
-        );
-        return;
-      }
-    }
     setSyncing(true);
     try {
       if (isSuperAdmin) {
@@ -230,8 +251,9 @@ export default function SettingsPage() {
               <Cloud size={17} /> Sincronización en la nube (Firebase)
             </CardTitle>
             <CardDescription>
-              La app funciona 100% offline. Las credenciales ya vienen precargadas de forma segura
-              en el build (.env); puedes sobrescribirlas aquí si cambias de proyecto.
+              La app trabaja en línea con respaldo local automático. Las credenciales ya vienen
+              precargadas de forma segura en el build (.env); puedes sobrescribirlas aquí si cambias
+              de proyecto.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -305,6 +327,45 @@ export default function SettingsPage() {
             <Button size="sm" variant="outline" onClick={() => void handleSyncNow()} disabled={syncing}>
               <CloudUpload size={14} /> {syncing ? 'Sincronizando…' : 'Sincronizar ahora'}
             </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {!isSuperAdmin && (
+        <Card className="mb-4">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Link2 size={17} /> Portal de clientes
+            </CardTitle>
+            <CardDescription>
+              Enlace exclusivo de tu organización: tus clientes consultan saldo, estado y próxima
+              cuota, y solicitan créditos sin llamar a la oficina.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {tenant && !tenant.clientPortalEnabled ? (
+              <p className="rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-600">
+                El portal está deshabilitado para tu organización. Solicita su activación a
+                ChrizDev.
+              </p>
+            ) : (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Input value={portalUrl} readOnly className="min-w-0 flex-1 font-mono text-xs" />
+                  <Button size="sm" variant="secondary" onClick={() => void copyPortalLink()}>
+                    <Copy size={14} /> Copiar enlace
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={sharePortalByWhatsApp}>
+                    Compartir por WhatsApp
+                  </Button>
+                </div>
+                <p className="text-[11px] leading-relaxed text-slate-400">
+                  El cliente entra con su número de documento y los últimos 4 dígitos de su
+                  teléfono. Solo puede consultar y solicitar; no puede modificar nada. No lo
+                  compartas con otras organizaciones.
+                </p>
+              </>
+            )}
           </CardContent>
         </Card>
       )}
@@ -391,11 +452,11 @@ export default function SettingsPage() {
         <CardContent className="flex items-start gap-3 py-4">
           <Info size={18} className="mt-0.5 shrink-0 text-slate-400" />
           <div className="text-xs leading-relaxed text-slate-500">
-            <p className="font-semibold text-slate-700">PresMon by ChrizDev · v1.1.0</p>
+            <p className="font-semibold text-slate-700">PresMon by ChrizDev · v1.2.0</p>
             <p>
-              PWA offline-first con IndexedDB (Dexie.js), motor de mora automática, score crediticio
-              dinámico según comportamiento de pago, generación de pagarés PDF en el dispositivo y
-              sincronización opcional con Firebase Firestore (Last-Write-Wins).
+              PWA en línea con caché local IndexedDB (Dexie.js), motor de mora automática, score
+              crediticio dinámico según comportamiento de pago, generación de pagarés PDF en el
+              dispositivo y sincronización continua con Firebase Firestore (Last-Write-Wins).
             </p>
           </div>
         </CardContent>

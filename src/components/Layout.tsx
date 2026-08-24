@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
@@ -35,7 +35,7 @@ import {
   setLastSync,
 } from '../lib/sync/syncEngine';
 import { openWhatsApp } from '../lib/share';
-import { cn, addDaysStr, formatCOP, formatDateShort, todayStr } from '../lib/format';
+import { cn, addDaysStr, diffDays, formatCOP, formatDateShort, nextMonthlyDue, todayStr } from '../lib/format';
 import { useToast } from './ui/toast';
 
 export default function Layout() {
@@ -61,9 +61,6 @@ export default function Layout() {
     () => (session?.tenantId ? db.tenants.get(session.tenantId) : Promise.resolve(undefined)),
     [session?.tenantId],
   );
-  const cloudDisabled =
-    session?.role === 'TENANT_ADMIN' && tenantRecord?.cloudSyncEnabled === false;
-
   const duePlanItem = useLiveQuery(
     async () => {
       if (!session || session.role !== 'TENANT_ADMIN' || !session.tenantId) return null;
@@ -97,12 +94,27 @@ export default function Layout() {
           planId: p.planId,
           planName: p.name,
           fee: Number(p.cloudMonthlyFee),
+          billingDay: Number(p.cloudBillingDay) || 1,
+          paidThrough: String(p.cloudPaidThrough ?? ''),
           stamp: String(p.updatedAt ?? ''),
         }
       : null;
   }, [session?.userId]);
-  const showCloudFeeBanner =
-    !!cloudFeePlan && cloudDismissedFor !== `${cloudFeePlan.planId}:${cloudFeePlan.stamp}`;
+
+  const cloudDue = useMemo(() => {
+    if (!cloudFeePlan) return null;
+    const nextDue = nextMonthlyDue(cloudFeePlan.billingDay, cloudFeePlan.paidThrough);
+    const days = diffDays(todayStr(), nextDue);
+    return {
+      nextDue,
+      days,
+      state: days < 0 ? ('overdue' as const) : days <= 7 ? ('soon' as const) : ('info' as const),
+    };
+  }, [cloudFeePlan]);
+
+  const cloudBannerKey =
+    cloudFeePlan && cloudDue ? `${cloudFeePlan.planId}:${cloudFeePlan.stamp}:${cloudDue.nextDue}` : '';
+  const showCloudFeeBanner = !!cloudFeePlan && !!cloudDue && cloudDismissedFor !== cloudBannerKey;
 
   const activeNotice = tenantRecord?.notice;
   const showNotice =
@@ -115,8 +127,8 @@ export default function Layout() {
 
   /**
    * Canal de CONTROL DE CUENTA: consulta el documento remoto de la
-   * organización (aunque el respaldo de datos esté apagado) y persiste
-   * bloqueos/avisos localmente para que sobrevivan recargas sin internet.
+   * organización y persiste bloqueos/avisos localmente para que sobrevivan
+   * recargas sin internet. Se respeta el interruptor «Control cuenta».
    */
   async function pollRemoteControl(): Promise<void> {
     if (!session || session.role !== 'TENANT_ADMIN' || !session.tenantId) return;
@@ -187,11 +199,6 @@ export default function Layout() {
 
   async function handleSync(silent = false) {
     if (!session || syncing) return;
-    if (cloudDisabled) {
-      if (!silent)
-        toast('La sincronización en la nube está desactivada para esta organización.', 'warning');
-      return;
-    }
     if (!isSyncConfigured()) {
       if (!silent) toast('Configura Firebase en Ajustes para sincronizar.', 'info');
       return;
@@ -342,16 +349,54 @@ export default function Layout() {
           </div>
         )}
 
-        {showCloudFeeBanner && cloudFeePlan && (
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 bg-sky-100 px-4 py-2.5 text-sm text-sky-900">
-            <Cloud size={16} className="text-sky-600" />
-            <span className="font-bold">Mensualidad de servicios cloud:</span>
-            <span>
-              {formatCOP(cloudFeePlan.fee)}/mes · cobro recurrente aparte del pago de la app · plan «
-              {cloudFeePlan.planName}»
-            </span>
+        {showCloudFeeBanner && cloudFeePlan && cloudDue && (
+          <div
+            className={cn(
+              'flex flex-wrap items-center gap-x-2 gap-y-1 px-4 py-2.5 text-sm',
+              cloudDue.state === 'overdue'
+                ? 'bg-red-600 text-white'
+                : cloudDue.state === 'soon'
+                  ? 'bg-amber-100 text-amber-900'
+                  : 'bg-sky-100 text-sky-900',
+            )}
+          >
+            <Cloud
+              size={16}
+              className={
+                cloudDue.state === 'overdue'
+                  ? ''
+                  : cloudDue.state === 'soon'
+                    ? 'text-amber-600'
+                    : 'text-sky-600'
+              }
+            />
+            {cloudDue.state === 'overdue' ? (
+              <>
+                <span className="font-bold">Mensualidad de servicios cloud VENCIDA:</span>
+                <span>
+                  {formatCOP(cloudFeePlan.fee)} · estaba programada para el{' '}
+                  {formatDateShort(cloudDue.nextDue)}
+                </span>
+              </>
+            ) : cloudDue.state === 'soon' ? (
+              <>
+                <span className="font-bold">Mensualidad de servicios cloud próxima:</span>
+                <span>
+                  {formatCOP(cloudFeePlan.fee)} · vence {formatDateShort(cloudDue.nextDue)} (
+                  {cloudDue.days === 0 ? '¡hoy!' : `en ${cloudDue.days} día(s)`})
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="font-bold">Mensualidad de servicios cloud:</span>
+                <span>
+                  {formatCOP(cloudFeePlan.fee)}/mes · próximo cobro{' '}
+                  {formatDateShort(cloudDue.nextDue)} · aparte del pago de la app
+                </span>
+              </>
+            )}
             <button
-              onClick={() => setCloudDismissedFor(`${cloudFeePlan.planId}:${cloudFeePlan.stamp}`)}
+              onClick={() => setCloudDismissedFor(cloudBannerKey)}
               className="ml-auto cursor-pointer rounded p-1 opacity-70 hover:opacity-100"
               aria-label="Ocultar aviso"
             >

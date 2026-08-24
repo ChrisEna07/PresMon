@@ -1,6 +1,7 @@
 import type { BaseRecord } from '../../db/models';
 import { db, nowISO } from '../../db/db';
 import { loadFirebaseConfig } from './firebaseConfig';
+import { isOfflineEdition } from '../offlineEdition';
 
 const SYNCED_COLLECTIONS = [
   'tenants',
@@ -22,6 +23,8 @@ export interface SyncResult {
 }
 
 export function isSyncConfigured(): boolean {
+  // EDICIÓN OFFLINE: el dispositivo nunca se conecta, sin excepciones.
+  if (isOfflineEdition()) return false;
   return loadFirebaseConfig() !== null;
 }
 
@@ -61,6 +64,7 @@ async function getFirestore() {
  * sin efecto sobre la sincronización).
  */
 export async function runSync(tenantId?: string): Promise<SyncResult> {
+  if (isOfflineEdition()) return { pushed: 0, pulled: 0, errors: [] };
   const fs = await getFirestore();
   const result: SyncResult = { pushed: 0, pulled: 0, errors: [] };
 
@@ -171,6 +175,7 @@ export interface RemoteTenantState {
  * conexión o Firebase no está configurado (no se debe actuar en ese caso).
  */
 export async function fetchRemoteTenant(tenantId: string): Promise<RemoteTenantState | null> {
+  if (isOfflineEdition()) return null;
   try {
     const fs = await getFirestore();
     const { doc, getDoc } = await import('firebase/firestore');
@@ -238,6 +243,7 @@ export async function purgeDocsFromCloud(
 }
 
 export async function ensureSuperAdminSynced(userId: string): Promise<void> {
+  if (isOfflineEdition()) return;
   try {
     const user = await db.users.get(userId);
     if (!user || user.role !== 'SUPER_ADMIN') return;

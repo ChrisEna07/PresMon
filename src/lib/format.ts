@@ -50,6 +50,21 @@ export function diffDays(fromISO: string, toISO: string): number {
   return Math.round((b - a) / 86400000);
 }
 
+/**
+ * Próximo vencimiento de un cobro mensual que cae el día `day` (1-28).
+ * Salta los meses ya cubiertos por `paidThrough` (YYYY-MM-DD) y el pasado.
+ */
+export function nextMonthlyDue(day: number, paidThrough?: string): string {
+  const safeDay = Math.min(28, Math.max(1, Math.round(day) || 1));
+  const today = todayStr();
+  let candidate = `${today.slice(0, 8)}${String(safeDay).padStart(2, '0')}`;
+  for (let i = 0; i < 24; i++) {
+    if (candidate >= today && (!paidThrough || candidate > paidThrough)) return candidate;
+    candidate = addMonthsStr(candidate, 1);
+  }
+  return candidate;
+}
+
 export function formatDateShort(iso: string): string {
   if (!iso) return '';
   const [y, m, d] = iso.slice(0, 10).split('-');
