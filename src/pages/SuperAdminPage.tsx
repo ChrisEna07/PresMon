@@ -3,6 +3,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import {
   Building2,
   Copy,
+  DatabaseZap,
   Globe,
   HardDriveDownload,
   KeyRound,
@@ -15,13 +16,14 @@ import {
   ShieldCheck,
   Trash2,
 } from 'lucide-react';
-import type { NoticeLevel, Tenant } from '../db/models';
-import { db, deleteTenantCascade, saveTenant, saveUser } from '../db/db';
+import type { NoticeLevel, ServicePlan, Tenant } from '../db/models';
+import { db, deleteTenantCascade, saveTenant, saveUser, wipeLocalTenantData } from '../db/db';
 import { useAuth } from '../store/auth';
 import { sha256Hex } from '../lib/crypto';
 import { logAudit } from '../lib/auditLogger';
 import { uid } from '../lib/id';
 import { formatDateTime } from '../lib/format';
+import { computeMonthlyInvoice } from '../lib/billingEngine';
 import { PageHeader, StatCard } from '../components/misc';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -56,6 +58,16 @@ export default function SuperAdminPage() {
   );
   const users = useLiveQuery(() => db.users.where('role').equals('TENANT_ADMIN').toArray(), []);
   const loans = useLiveQuery(() => db.loans.toArray(), []);
+  const plans = useLiveQuery(() => db.plans.toArray(), []);
+
+  const planByTenant = useMemo(() => {
+    const map = new Map<string, ServicePlan>();
+    (plans ?? []).forEach((p) => map.set(p.tenantId, p));
+    return map;
+  }, [plans]);
+
+  const [wipeTarget, setWipeTarget] = useState<Tenant | null>(null);
+  const [wiping, setWiping] = useState(false);
 
   const stats = useMemo(
     () => ({
@@ -308,6 +320,8 @@ export default function SuperAdminPage() {
     await saveTenant({
       ...tenant,
       appLocked: locked,
+      unlockedByAdmin: !locked,
+      wipeLocalData: false,
       updatedAt: new Date().toISOString(),
       syncStatus: 'PENDING',
     });
@@ -318,15 +332,55 @@ export default function SuperAdminPage() {
       actorName: session.displayName,
       entityId: tenant.tenantId,
       entityType: 'tenants',
-      payloadSnapshot: { campo: 'appLocked', valor: locked },
+      payloadSnapshot: { campo: 'appLocked', valor: locked, unlockedByAdmin: !locked },
     });
     toast(
       locked
         ? `«${tenant.name}» BLOQUEADA. Su app quedará inutilizable al conectarse (≤30 s).`
-        : `«${tenant.name}» DESBLOQUEADA. Recuperará el acceso al conectarse.`,
+        : `«${tenant.name}» DESBLOQUEADA. Desbloqueo administrativo aplicado (incluso si tiene mora > 5 días).`,
       locked ? 'warning' : 'success',
     );
     pushToCloud();
+  }
+
+  async function handleWipeTenantLocalData() {
+    if (!session || !wipeTarget) return;
+    setWiping(true);
+    try {
+      await wipeLocalTenantData(wipeTarget.tenantId);
+      const updated: Tenant = {
+        ...wipeTarget,
+        wipeLocalData: true,
+        offlineBlocked: true,
+        appLocked: true,
+        unlockedByAdmin: false,
+        updatedAt: new Date().toISOString(),
+        syncStatus: 'PENDING',
+      };
+      await saveTenant(updated);
+      await logAudit({
+        tenantId: '',
+        action: 'TENANT_UPDATED',
+        actorId: session.userId,
+        actorName: session.displayName,
+        entityId: wipeTarget.tenantId,
+        entityType: 'tenants',
+        payloadSnapshot: {
+          accion: 'BORRADO_DATOS_LOCALES_Y_REVOCACION_OFFLINE',
+          nombre: wipeTarget.name,
+        },
+      });
+      pushToCloud();
+      toast(
+        `Datos locales de «${wipeTarget.name}» purgados en este equipo. Se emitió la orden remota para purgar sus dispositivos y bloquear el modo offline.`,
+        'success',
+      );
+      setWipeTarget(null);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Error al purgar datos locales', 'error');
+    } finally {
+      setWiping(false);
+    }
   }
 
   async function sendNotice(e: FormEvent) {
@@ -517,142 +571,175 @@ export default function SuperAdminPage() {
           <TH className="text-right">Acciones</TH>
         </THead>
         <TBody>
-          {(tenants ?? []).map((t) => (
-            <TR key={t.tenantId} className={t.appLocked ? 'bg-red-50/60' : undefined}>
-              <TD className="font-medium text-slate-800">
-                {t.name}
-                {t.appLocked && (
-                  <span className="ml-2 inline-flex items-center gap-1 align-middle">
-                    <Lock size={12} className="text-red-500" />
-                    <Badge variant="danger">BLOQUEADA</Badge>
-                  </span>
-                )}
-                {!t.appLocked && t.notice && t.notice.message.trim() !== '' && (
-                  <span className="ml-2">
-                    <Megaphone size={12} className="inline text-sky-500" />
-                  </span>
-                )}
-              </TD>
-              <TD className="text-slate-600">{adminByTenant.get(t.tenantId) ?? '—'}</TD>
-              <TD>
-                {(loans ?? []).filter((l) => l.tenantId === t.tenantId).length}
-              </TD>
-              <TD className="text-xs text-slate-400">{formatDateTime(t.createdAt)}</TD>
-              <TD>
-                <div className="flex items-center gap-2">
-                  <Switch
-                    checked={t.status === 'ACTIVE'}
-                    onChange={() => void toggleStatus(t)}
-                    label="Estado"
-                  />
-                  <Badge variant={t.status === 'ACTIVE' ? 'success' : 'danger'}>
-                    {t.status === 'ACTIVE' ? 'ACTIVA' : 'SUSPENDIDA'}
-                  </Badge>
-                </div>
-              </TD>
-              <TD>
-                <div className="flex items-center gap-2">
-                  <Switch
-                    checked={t.remoteControlEnabled !== false}
-                    onChange={() => void toggleRemoteControl(t)}
-                    label="Control"
-                  />
-                  <Badge variant={t.remoteControlEnabled !== false ? 'success' : 'muted'}>
-                    {t.remoteControlEnabled !== false ? 'CTRL ON' : 'CTRL OFF'}
-                  </Badge>
-                </div>
-              </TD>
+          {(tenants ?? []).map((t) => {
+            const plan = planByTenant.get(t.tenantId);
+            const invoice = plan ? computeMonthlyInvoice(plan) : null;
+            const hasMora5Days = invoice?.isOverdueMoreThan5Days ?? false;
+            return (
+              <TR key={t.tenantId} className={t.appLocked || (hasMora5Days && !t.unlockedByAdmin) ? 'bg-red-50/60' : undefined}>
+                <TD className="font-medium text-slate-800">
+                  <div className="flex flex-col gap-0.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span>{t.name}</span>
+                      {t.appLocked && (
+                        <span className="inline-flex items-center gap-1">
+                          <Lock size={12} className="text-red-500" />
+                          <Badge variant="danger">BLOQUEADA</Badge>
+                        </span>
+                      )}
+                      {hasMora5Days && !t.appLocked && !t.unlockedByAdmin && (
+                        <Badge variant="danger">MORA &gt; 5 DÍAS ({invoice?.maxDaysOverdue}d)</Badge>
+                      )}
+                      {t.unlockedByAdmin && !t.appLocked && (
+                        <Badge variant="success">DESBLOQUEO ADMIN</Badge>
+                      )}
+                      {t.offlineBlocked && (
+                        <Badge variant="danger">OFFLINE REVOCADO</Badge>
+                      )}
+                      {!t.appLocked && t.notice && t.notice.message.trim() !== '' && (
+                        <Megaphone size={12} className="inline text-sky-500" />
+                      )}
+                    </div>
+                    {invoice && invoice.totalInvoiceAmount > 0 && (
+                      <span className="text-[11px] text-slate-500">
+                        Factura mes: {formatCOP(invoice.totalInvoiceAmount)}{' '}
+                        {invoice.maxDaysOverdue > 0 && (
+                          <span className="text-red-600 font-bold">({invoice.maxDaysOverdue} días mora)</span>
+                        )}
+                      </span>
+                    )}
+                  </div>
+                </TD>
+                <TD className="text-slate-600">{adminByTenant.get(t.tenantId) ?? '—'}</TD>
+                <TD>
+                  {(loans ?? []).filter((l) => l.tenantId === t.tenantId).length}
+                </TD>
+                <TD className="text-xs text-slate-400">{formatDateTime(t.createdAt)}</TD>
+                <TD>
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={t.status === 'ACTIVE'}
+                      onChange={() => void toggleStatus(t)}
+                      label="Estado"
+                    />
+                    <Badge variant={t.status === 'ACTIVE' ? 'success' : 'danger'}>
+                      {t.status === 'ACTIVE' ? 'ACTIVA' : 'SUSPENDIDA'}
+                    </Badge>
+                  </div>
+                </TD>
+                <TD>
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={t.remoteControlEnabled !== false}
+                      onChange={() => void toggleRemoteControl(t)}
+                      label="Control"
+                    />
+                    <Badge variant={t.remoteControlEnabled !== false ? 'success' : 'muted'}>
+                      {t.remoteControlEnabled !== false ? 'CTRL ON' : 'CTRL OFF'}
+                    </Badge>
+                  </div>
+                </TD>
 
-              <TD>
-                <div className="flex items-center gap-2">
-                  <Switch
-                    checked={t.clientPortalEnabled}
-                    onChange={() => void togglePortal(t)}
-                    label="Portal cliente"
-                  />
-                  <Badge variant={t.clientPortalEnabled ? 'info' : 'muted'}>
-                    {t.clientPortalEnabled ? 'ON' : 'OFF'}
-                  </Badge>
-                  {t.clientPortalEnabled && (
+                <TD>
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={t.clientPortalEnabled}
+                      onChange={() => void togglePortal(t)}
+                      label="Portal cliente"
+                    />
+                    <Badge variant={t.clientPortalEnabled ? 'info' : 'muted'}>
+                      {t.clientPortalEnabled ? 'ON' : 'OFF'}
+                    </Badge>
+                    {t.clientPortalEnabled && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        title="Enlace para clientes"
+                        onClick={() => setPortalLinkTarget(t)}
+                      >
+                        <Link2 size={13} /> <span className="hidden xl:inline">Enlace</span>
+                      </Button>
+                    )}
+                  </div>
+                </TD>
+                <TD className="text-right">
+                  <div className="flex justify-end gap-1">
                     <Button
                       variant="ghost"
                       size="sm"
-                      title="Enlace para clientes"
-                      onClick={() => setPortalLinkTarget(t)}
+                      title={
+                        t.appLocked || (hasMora5Days && !t.unlockedByAdmin)
+                          ? 'Desbloquear app (quitar bloqueo por impago o mora)'
+                          : 'Bloquear app por falta de pago'
+                      }
+                      onClick={() => void setAppLock(t, !(t.appLocked || (hasMora5Days && !t.unlockedByAdmin)))}
                     >
-                      <Link2 size={13} /> <span className="hidden xl:inline">Enlace</span>
+                      {t.appLocked || (hasMora5Days && !t.unlockedByAdmin) ? (
+                        <>
+                          <LockOpen size={13} />{' '}
+                          <span className="hidden xl:inline">Desbloquear</span>
+                        </>
+                      ) : (
+                        <>
+                          <Lock size={13} className="text-red-500" />{' '}
+                          <span className="hidden xl:inline text-red-600">Bloquear</span>
+                        </>
+                      )}
                     </Button>
-                  )}
-                </div>
-              </TD>
-              <TD className="text-right">
-                <div className="flex justify-end gap-1">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    title={
-                      t.appLocked
-                        ? 'Desbloquear app (quitar bloqueo por impago)'
-                        : 'Bloquear app por falta de pago'
-                    }
-                    onClick={() => void setAppLock(t, !t.appLocked)}
-                  >
-                    {t.appLocked ? (
-                      <>
-                        <LockOpen size={13} />{' '}
-                        <span className="hidden xl:inline">Desbloquear</span>
-                      </>
-                    ) : (
-                      <>
-                        <Lock size={13} className="text-red-500" />{' '}
-                        <span className="hidden xl:inline text-red-600">Bloquear</span>
-                      </>
-                    )}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    title="Enviar / retirar aviso en su panel"
-                    onClick={() => {
-                      setNoticeTarget(t);
-                      setNoticeAction('send');
-                      setNoticeText(t.notice?.message ?? '');
-                      setNoticeLevel(t.notice?.level ?? 'info');
-                    }}
-                  >
-                    <Megaphone size={13} />{' '}
-                    <span className="hidden xl:inline">Aviso</span>
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    title="Editar nombre"
-                    onClick={() => {
-                      setEditTarget(t);
-                      setEditName(t.name);
-                    }}
-                  >
-                    <Pencil size={13} /> <span className="hidden xl:inline">Editar</span>
-                  </Button>
-                  <Button variant="ghost" size="sm" title="Restablecer contraseña del administrador" onClick={() => setResetTarget(t)}>
-                    <KeyRound size={13} /> <span className="hidden xl:inline">Reset pass</span>
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    title={
-                      t.offlineLicense
-                        ? 'Edición Offline: ver enlace de instalación'
-                        : 'Emitir licencia Edición Offline (pago único)'
-                    }
-                    onClick={() => {
-                      setOfflineTargetId(t.tenantId);
-                      setOfflinePaid(false);
-                    }}
-                  >
-                    <HardDriveDownload size={13} />{' '}
-                    <span className="hidden xl:inline">Offline</span>
-                  </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      title="Enviar / retirar aviso en su panel"
+                      onClick={() => {
+                        setNoticeTarget(t);
+                        setNoticeAction('send');
+                        setNoticeText(t.notice?.message ?? '');
+                        setNoticeLevel(t.notice?.level ?? 'info');
+                      }}
+                    >
+                      <Megaphone size={13} />{' '}
+                      <span className="hidden xl:inline">Aviso</span>
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      title="Borrar datos locales de este equipo y revocar modo offline"
+                      className="text-amber-600 hover:bg-amber-50"
+                      onClick={() => setWipeTarget(t)}
+                    >
+                      <DatabaseZap size={13} />{' '}
+                      <span className="hidden xl:inline">Purgar local</span>
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      title="Editar nombre"
+                      onClick={() => {
+                        setEditTarget(t);
+                        setEditName(t.name);
+                      }}
+                    >
+                      <Pencil size={13} /> <span className="hidden xl:inline">Editar</span>
+                    </Button>
+                    <Button variant="ghost" size="sm" title="Restablecer contraseña del administrador" onClick={() => setResetTarget(t)}>
+                      <KeyRound size={13} /> <span className="hidden xl:inline">Reset pass</span>
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      title={
+                        t.offlineLicense
+                          ? 'Edición Offline: ver enlace de instalación'
+                          : 'Emitir licencia Edición Offline (pago único)'
+                      }
+                      onClick={() => {
+                        setOfflineTargetId(t.tenantId);
+                        setOfflinePaid(false);
+                      }}
+                    >
+                      <HardDriveDownload size={13} />{' '}
+                      <span className="hidden xl:inline">Offline</span>
+                    </Button>
                   <Button
                     variant="ghost"
                     size="sm"
@@ -949,6 +1036,52 @@ export default function SuperAdminPage() {
             </Button>
           </div>
         </form>
+      </Dialog>
+
+      <Dialog
+        open={wipeTarget !== null}
+        onClose={() => {
+          if (!wiping) setWipeTarget(null);
+        }}
+        title={`Borrar datos locales y revocar offline · ${wipeTarget?.name ?? ''}`}
+      >
+        <div className="space-y-3">
+          <div className="rounded-lg bg-red-50 p-3 text-xs leading-relaxed text-red-700">
+            <p className="font-bold">PURGA LOCAL Y REVOCACIÓN DE MODO OFFLINE</p>
+            <ul className="mt-1.5 list-inside list-disc space-y-1">
+              <li>
+                <strong>Purga en este equipo:</strong> Elimina de inmediato todos los préstamos,
+                cuotas, prestatarios, usuarios y auditoría de «{wipeTarget?.name}» en la base de
+                datos local (IndexedDB).
+              </li>
+              <li>
+                <strong>Orden remota (Wipe):</strong> Cualquier dispositivo de esta organización
+                que abra la app o se conecte purgará automáticamente su base de datos local y
+                cerrará la sesión.
+              </li>
+              <li>
+                <strong>Bloqueo de ejecución offline:</strong> Se deshabilita la posibilidad de que
+                la organización vuelva a usar la aplicación sin conexión.
+              </li>
+            </ul>
+          </div>
+          <p className="text-xs text-slate-500">
+            Usa esta función si el cliente no ha pagado su licencia o para impedir que continúe
+            operando la app de forma clandestina o desconectada.
+          </p>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" disabled={wiping} onClick={() => setWipeTarget(null)}>
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={wiping}
+              onClick={() => void handleWipeTenantLocalData()}
+            >
+              <DatabaseZap size={14} /> {wiping ? 'Purgando datos…' : 'Confirmar purga y revocar offline'}
+            </Button>
+          </div>
+        </div>
       </Dialog>
     </div>
   );

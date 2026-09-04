@@ -73,6 +73,12 @@ export interface Tenant extends BaseRecord {
    * Sin licencia no existe enlace de instalación offline.
    */
   offlineLicense?: OfflineLicenseInfo;
+  /** Orden de borrado remoto de todos los datos locales en cualquier dispositivo de la organización. */
+  wipeLocalData?: boolean;
+  /** Prohíbe la ejecución offline de la aplicación para esta organización. */
+  offlineBlocked?: boolean;
+  /** Desbloqueo administrativo expreso aplicado por el Super Admin (exime de bloqueo por mora > 5 días). */
+  unlockedByAdmin?: boolean;
 }
 
 export interface UserAccount extends BaseRecord {

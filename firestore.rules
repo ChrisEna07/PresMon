@@ -3,36 +3,51 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    function hasValidTenantId() {
+      return request.resource.data.tenantId is string;
+    }
+
     match /tenants/{doc} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if request.resource.data.tenantId is string &&
+                      request.resource.data.name is string;
     }
 
     match /users/{doc} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if request.resource.data.userId is string &&
+                      request.resource.data.username is string;
     }
 
     match /borrowers/{doc} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if hasValidTenantId() && request.resource.data.borrowerId is string;
     }
 
     match /loans/{doc} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if hasValidTenantId() && request.resource.data.loanId is string;
     }
 
     match /installments/{doc} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if hasValidTenantId() && request.resource.data.installmentId is string;
     }
 
     match /audit_logs/{doc} {
-      allow read, write: if true;
+      allow read: if true;
+      allow create: if hasValidTenantId() && request.resource.data.logId is string;
+      allow update, delete: if false; // Los logs de auditoría son inmutables
     }
 
     match /plans/{doc} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if hasValidTenantId() && request.resource.data.planId is string;
     }
 
     match /loan_requests/{doc} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if hasValidTenantId() && request.resource.data.requestId is string;
     }
   }
 }

@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { UserRole } from '../db/models';
-import { db, deleteTenantCascade } from '../db/db';
+import { db, deleteTenantCascade, wipeLocalTenantData } from '../db/db';
 import { sha256Hex } from '../lib/crypto';
 import { logAudit } from '../lib/auditLogger';
 import { fetchRemoteTenant, isSyncConfigured } from '../lib/sync/syncEngine';
@@ -67,17 +67,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let tenantName = 'Plataforma Global';
     let clientPortalEnabled = false;
     if (user.role === 'TENANT_ADMIN') {
-      // Verificación autoritativa contra la nube: si la organización fue
-      // eliminada, no hay forma de entrar y se borra la copia local.
+      // Verificación autoritativa contra la nube
       if (isSyncConfigured()) {
         const remote = await fetchRemoteTenant(user.tenantId);
+        if (remote && remote.found && remote.data?.wipeLocalData === true) {
+          await wipeLocalTenantData(user.tenantId).catch(() => undefined);
+          throw new Error('Los datos locales de esta organización fueron eliminados por el Super Administrador.');
+        }
         if (remote && (!remote.found || remote.status === 'DELETED')) {
           await deleteTenantCascade(user.tenantId).catch(() => undefined);
           throw new Error('Esta organización fue eliminada de la plataforma.');
         }
       }
       const tenant = await db.tenants.get(user.tenantId);
-      if (!tenant) throw new Error('Organización no encontrada.');
+      if (!tenant) throw new Error('Organización no encontrada o datos locales eliminados.');
+      if (tenant.wipeLocalData) {
+        await wipeLocalTenantData(user.tenantId).catch(() => undefined);
+        throw new Error('Los datos locales de esta organización fueron eliminados por el Super Administrador.');
+      }
+      if (tenant.offlineBlocked && !navigator.onLine) {
+        throw new Error('El modo offline para esta organización fue revocado por el Super Administrador. Se requiere conexión.');
+      }
       if (tenant.status === 'DELETED') {
         await deleteTenantCascade(user.tenantId).catch(() => undefined);
         throw new Error('Esta organización fue eliminada de la plataforma.');
@@ -135,6 +145,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // tuvo éxito; offline no se toca nada).
     if (isSyncConfigured()) {
       const remote = await fetchRemoteTenant(current.tenantId);
+      if (remote && remote.found && remote.data?.wipeLocalData === true) {
+        await wipeLocalTenantData(current.tenantId).catch(() => undefined);
+        localStorage.removeItem(SESSION_KEY);
+        setSession(null);
+        return 'org-deleted';
+      }
       if (remote && (!remote.found || remote.status === 'DELETED')) {
         await deleteTenantCascade(current.tenantId).catch(() => undefined);
         localStorage.removeItem(SESSION_KEY);
@@ -143,8 +159,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     }
     const tenant = await db.tenants.get(current.tenantId);
-    if (!tenant || tenant.status !== 'ACTIVE') {
-      const deleted = tenant?.status === 'DELETED';
+    if (!tenant || tenant.wipeLocalData) {
+      await wipeLocalTenantData(current.tenantId).catch(() => undefined);
+      localStorage.removeItem(SESSION_KEY);
+      setSession(null);
+      return 'org-deleted';
+    }
+    if (tenant.offlineBlocked && !navigator.onLine) {
+      localStorage.removeItem(SESSION_KEY);
+      setSession(null);
+      return 'forced-logout';
+    }
+    if (tenant.status !== 'ACTIVE') {
+      const deleted = tenant.status === 'DELETED';
       if (deleted) await deleteTenantCascade(current.tenantId).catch(() => undefined);
       localStorage.removeItem(SESSION_KEY);
       setSession(null);

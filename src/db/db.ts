@@ -131,6 +131,29 @@ export async function purgeLocalTenantData(tenantId: string): Promise<void> {
   }
 }
 
+/**
+ * Purga TOTAL de datos locales de la organización en este dispositivo:
+ * elimina todas las tablas operativas (usuarios, prestatarios, préstamos,
+ * cuotas, auditoría, planes, solicitudes) y limpia estados de sesión y
+ * edición offline si corresponden a esta organización.
+ */
+export async function wipeLocalTenantData(tenantId: string): Promise<void> {
+  await purgeLocalTenantData(tenantId);
+  try {
+    localStorage.removeItem(`presmon_last_sync_${tenantId}`);
+    const rawSession = localStorage.getItem('presmon_session_v1');
+    if (rawSession) {
+      const parsed = JSON.parse(rawSession) as { tenantId?: string };
+      if (parsed.tenantId === tenantId) {
+        localStorage.removeItem('presmon_session_v1');
+        localStorage.removeItem('presmon_edition');
+      }
+    }
+  } catch {
+    /* localStorage restringido */
+  }
+}
+
 export function stamp<T extends { updatedAt: string; syncStatus: string }>(obj: T): T {
   obj.updatedAt = nowISO();
   obj.syncStatus = 'PENDING';

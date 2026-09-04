@@ -22,7 +22,7 @@ import {
   WifiOff,
   X,
 } from 'lucide-react';
-import { db } from '../db/db';
+import { db, wipeLocalTenantData } from '../db/db';
 import type { Tenant } from '../db/models';
 import { useAuth } from '../store/auth';
 import { useOnline } from '../hooks/useOnline';
@@ -35,7 +35,8 @@ import {
   setLastSync,
 } from '../lib/sync/syncEngine';
 import { openWhatsApp } from '../lib/share';
-import { cn, addDaysStr, diffDays, formatCOP, formatDateShort, nextMonthlyDue, todayStr } from '../lib/format';
+import { computeMonthlyInvoice } from '../lib/billingEngine';
+import { cn, formatCOP, formatDateShort, todayStr } from '../lib/format';
 import { useToast } from './ui/toast';
 
 export default function Layout() {
@@ -61,60 +62,33 @@ export default function Layout() {
     () => (session?.tenantId ? db.tenants.get(session.tenantId) : Promise.resolve(undefined)),
     [session?.tenantId],
   );
-  const duePlanItem = useLiveQuery(
+
+  const currentPlan = useLiveQuery(
     async () => {
       if (!session || session.role !== 'TENANT_ADMIN' || !session.tenantId) return null;
       const orgPlans = await db.plans.where('tenantId').equals(session.tenantId).toArray();
-      const todayDate = todayStr();
-      const horizon = addDaysStr(todayDate, 7);
-      const pendings = orgPlans
-        .flatMap((p) =>
-          p.installments.map((inst) => ({ ...inst, planName: p.name, tenantRef: p.tenantId })),
-        )
-        .filter((i) => i.status === 'PENDING' && i.dueDate <= horizon)
-        .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
-      const first = pendings[0];
-      return first ?? null;
+      return orgPlans[0] ?? null;
     },
-    [session?.userId],
+    [session?.userId, session?.tenantId],
+  );
+
+  const monthlyInvoice = useMemo(
+    () => computeMonthlyInvoice(currentPlan, todayStr()),
+    [currentPlan],
   );
 
   const [bannerDismissedFor, setBannerDismissedFor] = useState('');
   const [noticeDismissedAt, setNoticeDismissedAt] = useState('');
-  const [cloudDismissedFor, setCloudDismissedFor] = useState('');
-  const showPlanBanner = !!duePlanItem && bannerDismissedFor !== duePlanItem.installmentId;
 
-  /** Plan con mensualidad cloud activa (cobro recurrente aparte del pago de la app). */
-  const cloudFeePlan = useLiveQuery(async () => {
-    if (!session || session.role !== 'TENANT_ADMIN' || !session.tenantId) return null;
-    const orgPlans = await db.plans.where('tenantId').equals(session.tenantId).toArray();
-    const p = orgPlans.find((x) => x.cloudServiceIncluded && (Number(x.cloudMonthlyFee) || 0) > 0);
-    return p
-      ? {
-          planId: p.planId,
-          planName: p.name,
-          fee: Number(p.cloudMonthlyFee),
-          billingDay: Number(p.cloudBillingDay) || 1,
-          paidThrough: String(p.cloudPaidThrough ?? ''),
-          stamp: String(p.updatedAt ?? ''),
-        }
-      : null;
-  }, [session?.userId]);
+  const isOverdueMoreThan5Days = monthlyInvoice.isOverdueMoreThan5Days;
+  const unlockedByAdmin = tenantRecord?.unlockedByAdmin === true;
+  const isAutoLockedForMora = isOverdueMoreThan5Days && !unlockedByAdmin;
 
-  const cloudDue = useMemo(() => {
-    if (!cloudFeePlan) return null;
-    const nextDue = nextMonthlyDue(cloudFeePlan.billingDay, cloudFeePlan.paidThrough);
-    const days = diffDays(todayStr(), nextDue);
-    return {
-      nextDue,
-      days,
-      state: days < 0 ? ('overdue' as const) : days <= 7 ? ('soon' as const) : ('info' as const),
-    };
-  }, [cloudFeePlan]);
-
-  const cloudBannerKey =
-    cloudFeePlan && cloudDue ? `${cloudFeePlan.planId}:${cloudFeePlan.stamp}:${cloudDue.nextDue}` : '';
-  const showCloudFeeBanner = !!cloudFeePlan && !!cloudDue && cloudDismissedFor !== cloudBannerKey;
+  const showMonthlyInvoiceBanner =
+    session?.role === 'TENANT_ADMIN' &&
+    monthlyInvoice.totalInvoiceAmount > 0 &&
+    (monthlyInvoice.maxDaysOverdue > 0 ||
+      bannerDismissedFor !== `${currentPlan?.planId}:${monthlyInvoice.totalInvoiceAmount}`);
 
   const activeNotice = tenantRecord?.notice;
   const showNotice =
@@ -122,13 +96,15 @@ export default function Layout() {
     !!activeNotice &&
     activeNotice.message.trim() !== '' &&
     noticeDismissedAt !== activeNotice.updatedAt;
+
   const appLocked =
-    session?.role === 'TENANT_ADMIN' && tenantRecord?.appLocked === true;
+    session?.role === 'TENANT_ADMIN' &&
+    (tenantRecord?.appLocked === true || isAutoLockedForMora);
 
   /**
    * Canal de CONTROL DE CUENTA: consulta el documento remoto de la
-   * organización y persiste bloqueos/avisos localmente para que sobrevivan
-   * recargas sin internet. Se respeta el interruptor «Control cuenta».
+   * organización y persiste bloqueos/avisos/borrado local para que sobrevivan
+   * recargas sin internet.
    */
   async function pollRemoteControl(): Promise<void> {
     if (!session || session.role !== 'TENANT_ADMIN' || !session.tenantId) return;
@@ -138,16 +114,35 @@ export default function Layout() {
     const remote = await fetchRemoteTenant(session.tenantId);
     if (!remote || !remote.found || !remote.data) return;
     if (remote.status === 'DELETED') return; // el guardia de sesión ya lo maneja
+
+    // Orden remota de borrado local emitida por Super Admin
+    if (remote.data.wipeLocalData === true) {
+      await wipeLocalTenantData(session.tenantId);
+      logout();
+      toast(
+        'Los datos locales de esta organización fueron borrados por el Super Administrador.',
+        'error',
+      );
+      navigate('/login', { replace: true });
+      return;
+    }
+
     const nextLocked = remote.data.appLocked === true;
+    const nextUnlocked = remote.data.unlockedByAdmin === true;
+    const nextOfflineBlocked = remote.data.offlineBlocked === true;
     const nextNotice = (remote.data.notice ?? undefined) as Tenant['notice'];
     if (!local) return;
     const changed =
       local.appLocked !== nextLocked ||
+      local.unlockedByAdmin !== nextUnlocked ||
+      local.offlineBlocked !== nextOfflineBlocked ||
       JSON.stringify(local.notice ?? null) !== JSON.stringify(nextNotice ?? null);
     if (!changed) return;
     await db.tenants.put({
       ...local,
       appLocked: nextLocked,
+      unlockedByAdmin: nextUnlocked,
+      offlineBlocked: nextOfflineBlocked,
       notice: nextNotice,
       updatedAt: String(remote.data.updatedAt ?? local.updatedAt),
       syncStatus: 'SYNCED',
@@ -322,86 +317,48 @@ export default function Layout() {
           </div>
         </header>
 
-        {showPlanBanner && duePlanItem && (
+        {showMonthlyInvoiceBanner && (
           <div
             className={cn(
               'flex flex-wrap items-center gap-x-2 gap-y-1 px-4 py-2.5 text-sm',
-              duePlanItem.dueDate < todayStr()
-                ? 'bg-red-600 text-white'
-                : 'bg-amber-100 text-amber-900',
-            )}
-          >
-            <AlertTriangle size={16} className={duePlanItem.dueDate < todayStr() ? '' : 'text-amber-600'} />
-            <span className="font-bold">
-              {duePlanItem.dueDate < todayStr() ? 'Cuota vencida con ChrizDev:' : 'Recordatorio de pago:'}
-            </span>
-            <span>
-              {duePlanItem.concept} · {formatCOP(duePlanItem.amount)} ·{' '}
-              {formatDateShort(duePlanItem.dueDate)} · plan «{duePlanItem.planName}»
-            </span>
-            <button
-              onClick={() => setBannerDismissedFor(duePlanItem.installmentId)}
-              className="ml-auto cursor-pointer rounded p-1 opacity-70 hover:opacity-100"
-              aria-label="Ocultar aviso"
-            >
-              <X size={15} />
-            </button>
-          </div>
-        )}
-
-        {showCloudFeeBanner && cloudFeePlan && cloudDue && (
-          <div
-            className={cn(
-              'flex flex-wrap items-center gap-x-2 gap-y-1 px-4 py-2.5 text-sm',
-              cloudDue.state === 'overdue'
-                ? 'bg-red-600 text-white'
-                : cloudDue.state === 'soon'
-                  ? 'bg-amber-100 text-amber-900'
+              monthlyInvoice.maxDaysOverdue > 5
+                ? 'bg-red-600 text-white font-medium'
+                : monthlyInvoice.maxDaysOverdue > 0
+                  ? 'bg-amber-400 text-slate-950 font-medium'
                   : 'bg-sky-100 text-sky-900',
             )}
           >
-            <Cloud
-              size={16}
-              className={
-                cloudDue.state === 'overdue'
-                  ? ''
-                  : cloudDue.state === 'soon'
-                    ? 'text-amber-600'
-                    : 'text-sky-600'
-              }
-            />
-            {cloudDue.state === 'overdue' ? (
-              <>
-                <span className="font-bold">Mensualidad de servicios cloud VENCIDA:</span>
-                <span>
-                  {formatCOP(cloudFeePlan.fee)} · estaba programada para el{' '}
-                  {formatDateShort(cloudDue.nextDue)}
-                </span>
-              </>
-            ) : cloudDue.state === 'soon' ? (
-              <>
-                <span className="font-bold">Mensualidad de servicios cloud próxima:</span>
-                <span>
-                  {formatCOP(cloudFeePlan.fee)} · vence {formatDateShort(cloudDue.nextDue)} (
-                  {cloudDue.days === 0 ? '¡hoy!' : `en ${cloudDue.days} día(s)`})
-                </span>
-              </>
+            {monthlyInvoice.maxDaysOverdue > 0 ? (
+              <AlertTriangle
+                size={16}
+                className={monthlyInvoice.maxDaysOverdue > 5 ? 'text-white' : 'text-slate-900'}
+              />
             ) : (
-              <>
-                <span className="font-bold">Mensualidad de servicios cloud:</span>
-                <span>
-                  {formatCOP(cloudFeePlan.fee)}/mes · próximo cobro{' '}
-                  {formatDateShort(cloudDue.nextDue)} · aparte del pago de la app
-                </span>
-              </>
+              <Cloud size={16} className="text-sky-600" />
             )}
-            <button
-              onClick={() => setCloudDismissedFor(cloudBannerKey)}
-              className="ml-auto cursor-pointer rounded p-1 opacity-70 hover:opacity-100"
-              aria-label="Ocultar aviso"
-            >
-              <X size={15} />
-            </button>
+            <span className="font-bold">
+              {monthlyInvoice.maxDaysOverdue > 5
+                ? `¡Factura mensual con mora de ${monthlyInvoice.maxDaysOverdue} días!`
+                : monthlyInvoice.maxDaysOverdue > 0
+                  ? `Factura mensual VENCIDA (${monthlyInvoice.maxDaysOverdue} días de atraso):`
+                  : 'Factura mensual del período:'}
+            </span>
+            <span>
+              Total {formatCOP(monthlyInvoice.totalInvoiceAmount)} · {monthlyInvoice.summaryText}
+            </span>
+            {monthlyInvoice.maxDaysOverdue === 0 && (
+              <button
+                onClick={() =>
+                  setBannerDismissedFor(
+                    `${currentPlan?.planId}:${monthlyInvoice.totalInvoiceAmount}`,
+                  )
+                }
+                className="ml-auto cursor-pointer rounded p-1 opacity-70 hover:opacity-100"
+                aria-label="Ocultar aviso"
+              >
+                <X size={15} />
+              </button>
+            )}
           </div>
         )}
 
@@ -435,25 +392,38 @@ export default function Layout() {
               <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-red-500/15">
                 <Lock size={32} className="text-red-500" />
               </div>
-              <h2 className="text-xl font-bold text-white">Servicio suspendido</h2>
+              <h2 className="text-xl font-bold text-white">
+                {isAutoLockedForMora
+                  ? 'Servicio suspendido por mora (> 5 días)'
+                  : 'Servicio suspendido'}
+              </h2>
               <p className="mt-2 text-sm leading-relaxed text-slate-300">
-                El acceso a PresMon está bloqueado por pagos pendientes con ChrizDev. Tus datos
-                están a salvo y se restituirá el acceso inmediatamente después de ponerte al día.
+                {isAutoLockedForMora
+                  ? `Tienes ${monthlyInvoice.maxDaysOverdue} días de vencimiento en tu factura mensual con ChrizDev. Para proteger la plataforma, tus operaciones están bloqueadas hasta que realices el pago o hasta que el Super Administrador desbloquee tu cuenta.`
+                  : 'El acceso a PresMon está bloqueado por decisión del Super Administrador. Tus datos están a salvo y se restituirá el acceso inmediatamente después de ponerte al día.'}
               </p>
-              {duePlanItem && (
-                <div className="mt-4 rounded-lg bg-red-500/10 px-4 py-3 text-left text-sm">
-                  <p className="font-bold text-red-400">
-                    Saldo pendiente: {formatCOP(duePlanItem.amount)}
+              {monthlyInvoice.totalInvoiceAmount > 0 && (
+                <div className="mt-4 rounded-lg bg-red-500/10 p-3.5 text-left text-sm border border-red-500/20">
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="text-xs font-semibold text-slate-400 uppercase">Factura mensual exigible</span>
+                    {monthlyInvoice.maxDaysOverdue > 0 && (
+                      <span className="font-mono text-xs font-bold text-red-400">
+                        {monthlyInvoice.maxDaysOverdue} días de mora
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xl font-black text-red-400">
+                    {formatCOP(monthlyInvoice.totalInvoiceAmount)}
                   </p>
-                  <p className="text-slate-300">
-                    {duePlanItem.concept} · vencía {formatDateShort(duePlanItem.dueDate)}
+                  <p className="mt-1 text-xs text-slate-300">
+                    {monthlyInvoice.summaryText}
                   </p>
                 </div>
               )}
               <button
                 onClick={() =>
                   openWhatsApp(
-                    `Hola ChrizDev, soy ${session?.tenantName ?? 'un cliente'} de PresMon. Quiero ponerme al día con mi plan para reactivar la app.`,
+                    `Hola ChrizDev, soy ${session?.tenantName ?? 'un cliente'} de PresMon. Mi servicio está suspendido por factura pendiente de ${formatCOP(monthlyInvoice.totalInvoiceAmount)} (${monthlyInvoice.maxDaysOverdue} días de mora). Quiero ponerme al día o solicitar desbloqueo.`,
                   )
                 }
                 className="mt-5 w-full cursor-pointer rounded-xl bg-emerald-600 px-4 py-3 font-bold text-white transition-colors hover:bg-emerald-500"

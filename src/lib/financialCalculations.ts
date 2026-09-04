@@ -110,24 +110,33 @@ export function recomputeInstallmentState(
   loan: Pick<Loan, 'dailyLateFeePercent' | 'fixedLateFeeAmount'>,
   todayISO: string,
 ): RecomputedState {
-  const fullyPaid = inst.amountPaid >= inst.baseAmountDue - 0.01;
-  if (fullyPaid || inst.status === 'PAID') {
+  if (inst.status === 'PAID') {
     return {
       daysOverdue: 0,
       lateFeeCharged: inst.lateFeeCharged,
-      totalAmountWithLateFee: inst.baseAmountDue,
+      totalAmountWithLateFee: round2(inst.baseAmountDue + inst.lateFeeCharged),
       status: 'PAID',
     };
   }
   const days = daysOverdue(inst.dueDate, todayISO);
   const fee = days > 0 ? computeLateFee(inst.baseAmountDue, loan.dailyLateFeePercent, loan.fixedLateFeeAmount, days) : 0;
+  const totalDue = round2(inst.baseAmountDue + fee);
+  const fullyPaid = inst.amountPaid >= totalDue - 0.01;
+  if (fullyPaid) {
+    return {
+      daysOverdue: 0,
+      lateFeeCharged: fee,
+      totalAmountWithLateFee: totalDue,
+      status: 'PAID',
+    };
+  }
   let status: Installment['status'] = 'PENDING';
   if (days > 0) status = 'OVERDUE';
   else if (inst.amountPaid > 0) status = 'PARTIAL';
   return {
     daysOverdue: days,
     lateFeeCharged: fee,
-    totalAmountWithLateFee: round2(inst.baseAmountDue + fee),
+    totalAmountWithLateFee: totalDue,
     status,
   };
 }

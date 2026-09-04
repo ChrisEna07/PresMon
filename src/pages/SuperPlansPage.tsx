@@ -47,6 +47,7 @@ export default function SuperPlansPage() {
   const [appTotal, setAppTotal] = useState('');
   const [cloudFee, setCloudFee] = useState('');
   const [cloudBillingDay, setCloudBillingDay] = useState('1');
+  const [cloudIncluded, setCloudIncluded] = useState(true);
   const [notes, setNotes] = useState('');
   const [rows, setRows] = useState<PlanInstallment[]>([]);
   const [dirty, setDirty] = useState(false);
@@ -96,6 +97,7 @@ export default function SuperPlansPage() {
     setAppTotal(existing?.appTotalAmount != null ? String(existing.appTotalAmount) : '');
     setCloudFee(existing?.cloudMonthlyFee != null ? String(existing.cloudMonthlyFee) : '');
     setCloudBillingDay(String(Number(existing?.cloudBillingDay) || 1));
+    setCloudIncluded(existing?.cloudServiceIncluded ?? true);
     setNotes(existing?.notes ?? '');
     setRows(
       existing
@@ -173,7 +175,7 @@ export default function SuperPlansPage() {
         planId: existing?.planId ?? uid(),
         tenantId,
         name: name.trim(),
-        cloudServiceIncluded: true,
+        cloudServiceIncluded: cloudIncluded,
         appPaymentMode: payMode,
         appTotalAmount:
           payMode === 'FULL'
@@ -194,8 +196,6 @@ export default function SuperPlansPage() {
         syncStatus: 'PENDING',
       };
       await db.plans.put(record);
-      // Modo online: la sincronización ya no depende de este interruptor;
-      // «Incluye servicios de nube» queda como concepto de facturación.
       await logAudit({
         tenantId: '',
         action: 'PLAN_UPDATED',
@@ -208,6 +208,7 @@ export default function SuperPlansPage() {
           plan: record.name,
           modoPagoApp: record.appPaymentMode === 'FULL' ? 'Contado' : 'Por cuotas',
           valorApp: record.appTotalAmount,
+          cobroCloudIncluidoEnFactura: record.cloudServiceIncluded,
           mensualidadCloud: record.cloudMonthlyFee,
           diaCobroCloud: record.cloudBillingDay,
           pagadaHasta: record.cloudPaidThrough ?? '—',
@@ -229,8 +230,19 @@ export default function SuperPlansPage() {
     const nextPending = rows.find((r) => r.status === 'PENDING');
     const appTotalNum = Number(appTotal) || 0;
     const cloudFeeNum = Number(cloudFee) || 0;
-    return { total, paid, pendingTotal, nextPending, appTotalNum, cloudFeeNum };
-  }, [rows, appTotal, cloudFee]);
+    const nextPendingAmount = nextPending ? Number(nextPending.amount) || 0 : 0;
+    const monthlyInvoiceEst = (cloudIncluded ? cloudFeeNum : 0) + nextPendingAmount;
+    return {
+      total,
+      paid,
+      pendingTotal,
+      nextPending,
+      appTotalNum,
+      cloudFeeNum,
+      monthlyInvoiceEst,
+      nextPendingAmount,
+    };
+  }, [rows, appTotal, cloudFee, cloudIncluded]);
 
   return (
     <div>
@@ -281,9 +293,21 @@ export default function SuperPlansPage() {
               </p>
               <p className="mt-1 font-bold text-sky-700">{formatCOP(summary.cloudFeeNum)}</p>
               <p className="mt-0.5 text-[10px] font-medium text-sky-500">
-                {summary.cloudFeeNum > 0
-                  ? `Vence día ${Number(cloudBillingDay) || 1} · ${formatCOP(summary.cloudFeeNum * 12)} al año`
-                  : 'Sin cobro mensual'}
+                {cloudIncluded ? '✓ Incluida en factura' : '✕ No incluida'} · día{' '}
+                {Number(cloudBillingDay) || 1}
+              </p>
+            </div>
+            <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-3">
+              <p className="text-[11px] font-semibold tracking-wide text-indigo-600 uppercase">
+                Factura mensual est.
+              </p>
+              <p className="mt-1 font-bold text-indigo-700">
+                {formatCOP(summary.monthlyInvoiceEst)}
+              </p>
+              <p className="mt-0.5 text-[10px] font-medium text-indigo-500">
+                {cloudIncluded
+                  ? `Cloud (${formatCOP(summary.cloudFeeNum)}) + Cuota (${formatCOP(summary.nextPendingAmount)})`
+                  : `Solo cuota app (${formatCOP(summary.nextPendingAmount)})`}
               </p>
             </div>
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
@@ -293,16 +317,6 @@ export default function SuperPlansPage() {
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
               <p className="text-[11px] font-semibold tracking-wide text-amber-600 uppercase">Por cobrar</p>
               <p className="mt-1 font-bold text-amber-700">{formatCOP(summary.pendingTotal)}</p>
-            </div>
-            <div className="rounded-xl border border-slate-200 bg-white p-3">
-              <p className="text-[11px] font-semibold tracking-wide text-slate-400 uppercase">Próxima cuota</p>
-              <p className="mt-1 font-bold text-slate-800">
-                {summary.nextPending
-                  ? `${formatDateShort(summary.nextPending.dueDate)} · ${formatCOP(summary.nextPending.amount)}`
-                  : payMode === 'FULL'
-                    ? 'Contado'
-                    : '—'}
-              </p>
             </div>
           </div>
 
@@ -389,9 +403,25 @@ export default function SuperPlansPage() {
                 </div>
               )}
               <div className="rounded-xl border border-sky-200 bg-sky-50 p-3 sm:max-w-md">
-                <Label className="flex items-center gap-1.5">
-                  <Cloud size={14} className="text-sky-600" /> Mensualidad de servicios cloud
-                </Label>
+                <div className="mb-3 flex items-center justify-between gap-2 border-b border-sky-200 pb-2.5">
+                  <div>
+                    <span className="flex items-center gap-1.5 text-xs font-bold text-sky-900">
+                      <Cloud size={14} className="text-sky-600" /> Cobro Cloud en factura mensual
+                    </span>
+                    <p className="text-[10px] text-sky-700">
+                      Suma la mensualidad al total exigible del mes y a los banners.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={cloudIncluded}
+                    onChange={() => {
+                      setCloudIncluded(!cloudIncluded);
+                      setDirty(true);
+                    }}
+                    label="Cobro Cloud"
+                  />
+                </div>
+                <Label>Valor mensualidad de servicios cloud</Label>
                 <Input
                   value={cloudFee}
                   onChange={(e) => {
