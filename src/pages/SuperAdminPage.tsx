@@ -22,7 +22,7 @@ import { useAuth } from '../store/auth';
 import { sha256Hex } from '../lib/crypto';
 import { logAudit } from '../lib/auditLogger';
 import { uid } from '../lib/id';
-import { formatDateTime } from '../lib/format';
+import { formatCOP, formatDateTime } from '../lib/format';
 import { computeMonthlyInvoice } from '../lib/billingEngine';
 import { PageHeader, StatCard } from '../components/misc';
 import { Badge } from '../components/ui/badge';
