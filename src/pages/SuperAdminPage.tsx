@@ -752,7 +752,8 @@ export default function SuperAdminPage() {
                 </div>
               </TD>
             </TR>
-          ))}
+          );
+        })}
         </TBody>
       </TableWrap>
 

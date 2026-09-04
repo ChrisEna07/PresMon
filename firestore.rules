@@ -9,45 +9,53 @@ service cloud.firestore {
 
     match /tenants/{doc} {
       allow read: if true;
-      allow write: if request.resource.data.tenantId is string &&
-                      request.resource.data.name is string;
+      allow create, update: if request.resource.data.tenantId is string &&
+                               request.resource.data.name is string;
+      allow delete: if true;
     }
 
     match /users/{doc} {
       allow read: if true;
-      allow write: if request.resource.data.userId is string &&
-                      request.resource.data.username is string;
+      allow create, update: if request.resource.data.userId is string &&
+                               request.resource.data.username is string;
+      allow delete: if true;
     }
 
     match /borrowers/{doc} {
       allow read: if true;
-      allow write: if hasValidTenantId() && request.resource.data.borrowerId is string;
+      allow create, update: if hasValidTenantId() && request.resource.data.borrowerId is string;
+      allow delete: if true;
     }
 
     match /loans/{doc} {
       allow read: if true;
-      allow write: if hasValidTenantId() && request.resource.data.loanId is string;
+      allow create, update: if hasValidTenantId() && request.resource.data.loanId is string;
+      allow delete: if true;
     }
 
     match /installments/{doc} {
       allow read: if true;
-      allow write: if hasValidTenantId() && request.resource.data.installmentId is string;
+      allow create, update: if hasValidTenantId() && request.resource.data.installmentId is string;
+      allow delete: if true;
     }
 
     match /audit_logs/{doc} {
       allow read: if true;
       allow create: if hasValidTenantId() && request.resource.data.logId is string;
-      allow update, delete: if false; // Los logs de auditoría son inmutables
+      allow update: if false; // Los logs de auditoría son inmutables
+      allow delete: if true;  // Permitido para purga al eliminar organización
     }
 
     match /plans/{doc} {
       allow read: if true;
-      allow write: if hasValidTenantId() && request.resource.data.planId is string;
+      allow create, update: if hasValidTenantId() && request.resource.data.planId is string;
+      allow delete: if true;
     }
 
     match /loan_requests/{doc} {
       allow read: if true;
-      allow write: if hasValidTenantId() && request.resource.data.requestId is string;
+      allow create, update: if hasValidTenantId() && request.resource.data.requestId is string;
+      allow delete: if true;
     }
   }
 }
