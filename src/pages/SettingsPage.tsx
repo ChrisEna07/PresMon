@@ -8,6 +8,8 @@ import {
   Info,
   KeyRound,
   Link2,
+  Lock,
+  MessageCircle,
   ShieldAlert,
   Trash2,
   Upload,
@@ -15,6 +17,7 @@ import {
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/db';
 import { useAuth } from '../store/auth';
+import { openWhatsApp } from '../lib/share';
 import {
   clearFirebaseConfig,
   loadFirebaseConfig,
@@ -241,10 +244,53 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="max-w-3xl">
+    <div className="relative max-w-3xl">
       <PageHeader title="Ajustes" description="Seguridad, respaldos y mantenimiento local" />
 
-      {isSuperAdmin && (
+      {!isSuperAdmin && (
+        <div className="absolute inset-x-0 top-20 bottom-0 z-30 flex items-start justify-center pt-8 sm:pt-14 pointer-events-auto">
+          <div className="mx-4 w-full max-w-md rounded-2xl border border-slate-200/90 bg-white/95 p-6 md:p-8 text-center shadow-2xl backdrop-blur-xl ring-1 ring-slate-900/10">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-500/10 text-amber-600 ring-8 ring-amber-500/5">
+              <Lock size={32} />
+            </div>
+            <span className="inline-block rounded-full bg-amber-100 px-3 py-1 text-[11px] font-bold text-amber-800 uppercase tracking-wide">
+              Módulo restringido
+            </span>
+            <h2 className="mt-3 text-xl font-extrabold text-slate-800">
+              Configuraciones Bloqueadas
+            </h2>
+            <p className="mt-2 text-sm font-semibold leading-relaxed text-slate-700">
+              Contacta al Desarrollador para cualquier cambio que necesites.
+            </p>
+            <p className="mt-2 text-xs leading-relaxed text-slate-500">
+              Los parámetros del sistema, sincronización en la nube, credenciales de base de datos y respaldos de tu organización están centralizados para proteger la integridad operativa.
+            </p>
+            <div className="mt-6 flex flex-col gap-2.5">
+              <Button
+                size="lg"
+                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold flex items-center justify-center gap-2 shadow-md shadow-emerald-600/20 cursor-pointer"
+                onClick={() =>
+                  openWhatsApp(
+                    `Hola ChrizDev, soy ${session?.tenantName ?? 'un administrador'} de PresMon. Necesito solicitar un cambio o ajuste en la configuración de mi organización.`,
+                  )
+                }
+              >
+                <MessageCircle size={18} /> Contactar al Desarrollador
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full cursor-pointer"
+                onClick={() => navigate('/')}
+              >
+                Volver al panel principal
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className={!isSuperAdmin ? 'filter blur-sm select-none pointer-events-none opacity-30 transition-all' : undefined}>
+        {isSuperAdmin && (
         <Card className="mb-4">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -461,6 +507,7 @@ export default function SettingsPage() {
           </div>
         </CardContent>
       </Card>
+      </div>
 
       <Dialog
         open={resetOpen}
