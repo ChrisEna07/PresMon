@@ -180,7 +180,18 @@ export async function runSync(tenantId?: string): Promise<SyncResult> {
         }
       }
     } catch (err) {
-      result.errors.push(`${name}: ${err instanceof Error ? err.message : String(err)}`);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (
+        name === 'payment_reports' &&
+        (errMsg.toLowerCase().includes('permissions') ||
+          errMsg.toLowerCase().includes('permission-denied'))
+      ) {
+        console.warn(
+          '[Sync] payment_reports: Permisos aún no habilitados en Firestore (actualizar firestore.rules en consola de Firebase).',
+        );
+      } else {
+        result.errors.push(`${name}: ${errMsg}`);
+      }
     }
   }
 

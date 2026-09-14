@@ -6,11 +6,13 @@ import {
   Building2,
   Check,
   CheckCircle,
+  ChevronDown,
   Clock,
   Copy,
   CreditCard,
   DatabaseZap,
   Eye,
+  FileCode,
   Globe,
   HardDriveDownload,
   Image as ImageIcon,
@@ -141,6 +143,74 @@ export default function SuperAdminPage() {
   const [selectedBannerTenantId, setSelectedBannerTenantId] = useState<string>(
     searchParams.get('tenantId') || '',
   );
+
+  // Menú desplegable de acciones por fila y modal de reglas Firestore
+  const [openActionTenantId, setOpenActionTenantId] = useState<string | null>(null);
+  const [rulesModalOpen, setRulesModalOpen] = useState(false);
+
+  function getTenantOnlineInfo(t: Tenant): {
+    badgeVariant: 'success' | 'warning' | 'muted' | 'danger' | 'info';
+    text: string;
+    tooltip: string;
+    isLive: boolean;
+  } {
+    const seenAt = t.lastSeenOnlineAt || t.offlineOnlineDetectedAt;
+    if (!seenAt) {
+      return {
+        badgeVariant: 'muted',
+        text: 'Sin registro',
+        tooltip: 'Esta organización no ha registrado conexiones online todavía.',
+        isLive: false,
+      };
+    }
+
+    const elapsedMs = Date.now() - new Date(seenAt).getTime();
+    const elapsedMins = Math.max(0, elapsedMs / 60000);
+    const device = t.lastSeenDevice || t.offlineDeviceInfo || 'Navegador Web';
+
+    if (elapsedMins <= 4) {
+      if (t.offlineLicense || t.offlineOnlineDetected) {
+        return {
+          badgeVariant: 'warning',
+          text: '🟢 OFFLINE CON RED',
+          tooltip: `App edición offline con internet activo ahora. Último latido: ${formatDateTime(seenAt)}. Dispositivo: ${device}`,
+          isLive: true,
+        };
+      }
+      return {
+        badgeVariant: 'success',
+        text: '🟢 EN LÍNEA',
+        tooltip: `Conexión activa ahora en la plataforma. Último latido: ${formatDateTime(seenAt)}. Dispositivo: ${device}`,
+        isLive: true,
+      };
+    }
+
+    if (elapsedMins < 60) {
+      return {
+        badgeVariant: 'info',
+        text: `Hace ${Math.round(elapsedMins)} min`,
+        tooltip: `Última conexión registrada: ${formatDateTime(seenAt)}. Dispositivo: ${device}`,
+        isLive: false,
+      };
+    }
+
+    const hours = Math.round(elapsedMins / 60);
+    if (hours < 24) {
+      return {
+        badgeVariant: 'muted',
+        text: `Hace ${hours} h`,
+        tooltip: `Última conexión registrada: ${formatDateTime(seenAt)}. Dispositivo: ${device}`,
+        isLive: false,
+      };
+    }
+
+    return {
+      badgeVariant: 'muted',
+      text: `Visto ${formatDateTime(seenAt).slice(0, 10)}`,
+      tooltip: `Última conexión registrada: ${formatDateTime(seenAt)}. Dispositivo: ${device}`,
+      isLive: false,
+    };
+  }
 
   useEffect(() => {
     const tabParam = searchParams.get('tab');
@@ -918,9 +988,14 @@ export default function SuperAdminPage() {
         title="Super Admin"
         description="Control global de organizaciones (tenants) · solo ChrizDev"
         actions={
-          <Button size="sm" onClick={() => setCreateOpen(true)}>
-            <Plus size={14} /> Nueva organización
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setRulesModalOpen(true)}>
+              <FileCode size={14} /> Reglas Firestore
+            </Button>
+            <Button size="sm" onClick={() => setCreateOpen(true)}>
+              <Plus size={14} /> Nueva organización
+            </Button>
+          </div>
         }
       />
 
@@ -983,12 +1058,11 @@ export default function SuperAdminPage() {
           <TH>Organización</TH>
           <TH>Admin</TH>
           <TH>Préstamos</TH>
+          <TH>Conexión / Red</TH>
           <TH>Creada</TH>
           <TH>Estado</TH>
-                    <TH>Control cuenta</TH>
-
-
-          <TH>ENABLE_CLIENT_PORTAL</TH>
+          <TH>Control cuenta</TH>
+          <TH>Portal cliente</TH>
           <TH className="text-right">Acciones</TH>
         </THead>
         <TBody>
@@ -1057,6 +1131,25 @@ export default function SuperAdminPage() {
                 <TD>
                   {(loans ?? []).filter((l) => l.tenantId === t.tenantId).length}
                 </TD>
+                <TD>
+                  {(() => {
+                    const onlineInfo = getTenantOnlineInfo(t);
+                    return (
+                      <div className="flex flex-col gap-0.5" title={onlineInfo.tooltip}>
+                        <div className="flex items-center gap-1.5">
+                          <Badge variant={onlineInfo.badgeVariant} className={onlineInfo.isLive ? 'font-bold tracking-wide' : undefined}>
+                            {onlineInfo.text}
+                          </Badge>
+                        </div>
+                        {onlineInfo.isLive && (
+                          <span className="text-[10px] text-slate-500 font-mono">
+                            {formatDateTime(t.lastSeenOnlineAt || t.offlineOnlineDetectedAt || '').slice(11, 19)}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </TD>
                 <TD className="text-xs text-slate-400">{formatDateTime(t.createdAt)}</TD>
                 <TD>
                   <div className="flex items-center gap-2">
@@ -1093,129 +1186,180 @@ export default function SuperAdminPage() {
                     <Badge variant={t.clientPortalEnabled ? 'info' : 'muted'}>
                       {t.clientPortalEnabled ? 'ON' : 'OFF'}
                     </Badge>
-                    {t.clientPortalEnabled && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        title="Enlace para clientes"
-                        onClick={() => setPortalLinkTarget(t)}
-                      >
-                        <Link2 size={13} /> <span className="hidden xl:inline">Enlace</span>
-                      </Button>
-                    )}
                   </div>
                 </TD>
                 <TD className="text-right">
-                  <div className="flex justify-end gap-1">
+                  <div className="relative inline-block text-left">
                     <Button
-                      variant="ghost"
+                      variant="outline"
                       size="sm"
-                      title={
-                        t.appLocked || (hasMora5Days && !t.unlockedByAdmin)
-                          ? 'Desbloquear app (quitar bloqueo por impago o mora)'
-                          : 'Bloquear app por falta de pago'
-                      }
-                      onClick={() => void setAppLock(t, !(t.appLocked || (hasMora5Days && !t.unlockedByAdmin)))}
+                      className="gap-1.5 font-medium shadow-xs hover:bg-slate-100 cursor-pointer"
+                      onClick={() => setOpenActionTenantId(openActionTenantId === t.tenantId ? null : t.tenantId)}
                     >
-                      {t.appLocked || (hasMora5Days && !t.unlockedByAdmin) ? (
-                        <>
-                          <LockOpen size={13} />{' '}
-                          <span className="hidden xl:inline">Desbloquear</span>
-                        </>
-                      ) : (
-                        <>
-                          <Lock size={13} className="text-red-500" />{' '}
-                          <span className="hidden xl:inline text-red-600">Bloquear</span>
-                        </>
-                      )}
+                      <span>Acciones</span>
+                      <ChevronDown
+                        size={14}
+                        className={cn(
+                          'transition-transform duration-200 text-slate-500',
+                          openActionTenantId === t.tenantId && 'rotate-180',
+                        )}
+                      />
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      title="Administrar banner, aviso y cobro en su panel"
-                      onClick={() => {
-                        setSelectedBannerTenantId(t.tenantId);
-                        setActiveTab('banners');
-                      }}
-                    >
-                      <Megaphone size={13} />{' '}
-                      <span className="hidden xl:inline">Aviso</span>
-                    </Button>
-                    {invoice && invoice.totalInvoiceAmount > 0 && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        title={
-                          t.paymentBannerDeactivated
-                            ? 'Reactivar banner insistente de cobro en el panel de la organización'
-                            : 'Desactivar banner insistente de cobro en el panel de la organización'
-                        }
-                        className={t.paymentBannerDeactivated ? 'text-slate-400' : 'text-red-600 hover:bg-red-50'}
-                        onClick={() => void togglePaymentBanner(t)}
-                      >
-                        <AlertTriangle size={13} />{' '}
-                        <span className="hidden xl:inline">
-                          {t.paymentBannerDeactivated ? 'Activar cobro' : 'Quitar cobro'}
-                        </span>
-                      </Button>
+
+                    {openActionTenantId === t.tenantId && (
+                      <>
+                        <div
+                          className="fixed inset-0 z-40"
+                          onClick={() => setOpenActionTenantId(null)}
+                        />
+                        <div className="absolute right-0 mt-1.5 w-60 origin-top-right rounded-xl border border-slate-200 bg-white py-1.5 shadow-xl ring-1 ring-black/5 z-50 text-xs divide-y divide-slate-100 text-slate-700">
+                          {/* Grupo 1: Acceso y Pagos */}
+                          <div className="py-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenActionTenantId(null);
+                                void setAppLock(t, !(t.appLocked || (hasMora5Days && !t.unlockedByAdmin)));
+                              }}
+                              className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-slate-50 transition-colors text-left font-medium cursor-pointer"
+                            >
+                              {t.appLocked || (hasMora5Days && !t.unlockedByAdmin) ? (
+                                <>
+                                  <LockOpen size={14} className="text-emerald-600 shrink-0" />
+                                  <span className="text-emerald-700">Desbloquear app</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Lock size={14} className="text-red-500 shrink-0" />
+                                  <span className="text-red-600">Bloquear app por falta de pago</span>
+                                </>
+                              )}
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenActionTenantId(null);
+                                setSelectedBannerTenantId(t.tenantId);
+                                setActiveTab('banners');
+                              }}
+                              className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-slate-50 transition-colors text-left cursor-pointer"
+                            >
+                              <Megaphone size={14} className="text-sky-600 shrink-0" />
+                              <span>Administrar avisos y banners</span>
+                            </button>
+
+                            {invoice && invoice.totalInvoiceAmount > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setOpenActionTenantId(null);
+                                  void togglePaymentBanner(t);
+                                }}
+                                className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-slate-50 transition-colors text-left cursor-pointer"
+                              >
+                                <AlertTriangle
+                                  size={14}
+                                  className={cn('shrink-0', t.paymentBannerDeactivated ? 'text-slate-400' : 'text-amber-600')}
+                                />
+                                <span>{t.paymentBannerDeactivated ? 'Activar banner cobro' : 'Desactivar banner cobro'}</span>
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Grupo 2: Seguridad y Purga Offline */}
+                          <div className="py-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenActionTenantId(null);
+                                setWipeTarget(t);
+                                setWipeLockOrg(false);
+                              }}
+                              className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-amber-50/80 transition-colors text-left text-amber-800 font-medium cursor-pointer"
+                            >
+                              <DatabaseZap size={14} className="text-amber-600 shrink-0" />
+                              <span>Purgar base local y revocar offline</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenActionTenantId(null);
+                                setOfflineTargetId(t.tenantId);
+                                setOfflinePaid(false);
+                              }}
+                              className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-slate-50 transition-colors text-left cursor-pointer"
+                            >
+                              <HardDriveDownload size={14} className="text-indigo-600 shrink-0" />
+                              <span>{t.offlineLicense ? 'Ver enlace Edición Offline' : 'Emitir Edición Offline'}</span>
+                            </button>
+                          </div>
+
+                          {/* Grupo 3: Edición y Credenciales */}
+                          <div className="py-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenActionTenantId(null);
+                                setEditTarget(t);
+                                setEditName(t.name);
+                              }}
+                              className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-slate-50 transition-colors text-left cursor-pointer"
+                            >
+                              <Pencil size={14} className="text-slate-500 shrink-0" />
+                              <span>Editar nombre</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenActionTenantId(null);
+                                setResetTarget(t);
+                              }}
+                              className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-slate-50 transition-colors text-left cursor-pointer"
+                            >
+                              <KeyRound size={14} className="text-slate-500 shrink-0" />
+                              <span>Restablecer contraseña admin</span>
+                            </button>
+
+                            {t.clientPortalEnabled && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setOpenActionTenantId(null);
+                                  setPortalLinkTarget(t);
+                                }}
+                                className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-slate-50 transition-colors text-left cursor-pointer"
+                              >
+                                <Link2 size={14} className="text-sky-600 shrink-0" />
+                                <span>Enlace para clientes</span>
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Grupo 4: Zona de Peligro */}
+                          <div className="py-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenActionTenantId(null);
+                                void openDeleteDialog(t);
+                              }}
+                              className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-red-50 transition-colors text-left text-red-600 font-medium cursor-pointer"
+                            >
+                              <Trash2 size={14} className="text-red-600 shrink-0" />
+                              <span>Eliminar organización</span>
+                            </button>
+                          </div>
+                        </div>
+                      </>
                     )}
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      title="Borrar datos locales de este equipo y revocar modo offline"
-                      className="text-amber-600 hover:bg-amber-50"
-                      onClick={() => {
-                        setWipeTarget(t);
-                        setWipeLockOrg(false);
-                      }}
-                    >
-                      <DatabaseZap size={13} />{' '}
-                      <span className="hidden xl:inline">Purgar local</span>
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      title="Editar nombre"
-                      onClick={() => {
-                        setEditTarget(t);
-                        setEditName(t.name);
-                      }}
-                    >
-                      <Pencil size={13} /> <span className="hidden xl:inline">Editar</span>
-                    </Button>
-                    <Button variant="ghost" size="sm" title="Restablecer contraseña del administrador" onClick={() => setResetTarget(t)}>
-                      <KeyRound size={13} /> <span className="hidden xl:inline">Reset pass</span>
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      title={
-                        t.offlineLicense
-                          ? 'Edición Offline: ver enlace de instalación'
-                          : 'Emitir licencia Edición Offline (pago único)'
-                      }
-                      onClick={() => {
-                        setOfflineTargetId(t.tenantId);
-                        setOfflinePaid(false);
-                      }}
-                    >
-                      <HardDriveDownload size={13} />{' '}
-                      <span className="hidden xl:inline">Offline</span>
-                    </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    title="Eliminar organización"
-                    className="text-red-600 hover:bg-red-50"
-                    onClick={() => void openDeleteDialog(t)}
-                  >
-                    <Trash2 size={13} /> <span className="hidden xl:inline">Eliminar</span>
-                  </Button>
-                </div>
-              </TD>
-            </TR>
-          );
-        })}
+                  </div>
+                </TD>
+              </TR>
+            );
+          })}
         </TBody>
       </TableWrap>
         </>
@@ -2270,6 +2414,181 @@ export default function SuperAdminPage() {
             </Button>
           </div>
         </form>
+      </Dialog>
+
+      {/* Modal para visualizar y copiar las Reglas Firestore actualizadas */}
+      <Dialog
+        open={rulesModalOpen}
+        onClose={() => setRulesModalOpen(false)}
+        title="Reglas de Seguridad Firestore (firestore.rules)"
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-slate-600 leading-relaxed">
+            Copia estas reglas y pégalas en tu consola de Firebase:{' '}
+            <strong className="text-slate-800">Firebase Console &gt; Firestore Database &gt; Reglas (Rules)</strong>{' '}
+            y haz clic en <strong className="text-emerald-700">Publicar</strong>. Contemplan sincronización, auditoría,
+            control de cuenta remota y el nuevo módulo de reportes de pago.
+          </p>
+
+          <div className="rounded-lg border border-slate-200 bg-slate-900 p-3 font-mono text-[11px] text-slate-200 max-h-64 overflow-y-auto">
+            <pre className="whitespace-pre">{`rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function hasValidTenantId() {
+      return request.resource.data.tenantId is string;
+    }
+
+    match /tenants/{doc} {
+      allow read: if true;
+      allow create, update: if request.resource.data.tenantId is string &&
+                               request.resource.data.name is string;
+      allow delete: if true;
+    }
+
+    match /users/{doc} {
+      allow read: if true;
+      allow create, update: if request.resource.data.userId is string &&
+                               request.resource.data.username is string;
+      allow delete: if true;
+    }
+
+    match /borrowers/{doc} {
+      allow read: if true;
+      allow create, update: if hasValidTenantId() && request.resource.data.borrowerId is string;
+      allow delete: if true;
+    }
+
+    match /loans/{doc} {
+      allow read: if true;
+      allow create, update: if hasValidTenantId() && request.resource.data.loanId is string;
+      allow delete: if true;
+    }
+
+    match /installments/{doc} {
+      allow read: if true;
+      allow create, update: if hasValidTenantId() && request.resource.data.installmentId is string;
+      allow delete: if true;
+    }
+
+    match /audit_logs/{doc} {
+      allow read: if true;
+      allow create: if hasValidTenantId() && request.resource.data.logId is string;
+      allow update: if false;
+      allow delete: if true;
+    }
+
+    match /plans/{doc} {
+      allow read: if true;
+      allow create, update: if hasValidTenantId() && request.resource.data.planId is string;
+      allow delete: if true;
+    }
+
+    match /loan_requests/{doc} {
+      allow read: if true;
+      allow create, update: if hasValidTenantId() && request.resource.data.requestId is string;
+      allow delete: if true;
+    }
+
+    match /payment_reports/{doc} {
+      allow read: if true;
+      allow create, update: if hasValidTenantId() && request.resource.data.reportId is string;
+      allow delete: if true;
+    }
+  }
+}`}</pre>
+          </div>
+
+          <div className="flex justify-between items-center pt-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={async () => {
+                const rulesText = `rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function hasValidTenantId() {
+      return request.resource.data.tenantId is string;
+    }
+
+    match /tenants/{doc} {
+      allow read: if true;
+      allow create, update: if request.resource.data.tenantId is string &&
+                               request.resource.data.name is string;
+      allow delete: if true;
+    }
+
+    match /users/{doc} {
+      allow read: if true;
+      allow create, update: if request.resource.data.userId is string &&
+                               request.resource.data.username is string;
+      allow delete: if true;
+    }
+
+    match /borrowers/{doc} {
+      allow read: if true;
+      allow create, update: if hasValidTenantId() && request.resource.data.borrowerId is string;
+      allow delete: if true;
+    }
+
+    match /loans/{doc} {
+      allow read: if true;
+      allow create, update: if hasValidTenantId() && request.resource.data.loanId is string;
+      allow delete: if true;
+    }
+
+    match /installments/{doc} {
+      allow read: if true;
+      allow create, update: if hasValidTenantId() && request.resource.data.installmentId is string;
+      allow delete: if true;
+    }
+
+    match /audit_logs/{doc} {
+      allow read: if true;
+      allow create: if hasValidTenantId() && request.resource.data.logId is string;
+      allow update: if false;
+      allow delete: if true;
+    }
+
+    match /plans/{doc} {
+      allow read: if true;
+      allow create, update: if hasValidTenantId() && request.resource.data.planId is string;
+      allow delete: if true;
+    }
+
+    match /loan_requests/{doc} {
+      allow read: if true;
+      allow create, update: if hasValidTenantId() && request.resource.data.requestId is string;
+      allow delete: if true;
+    }
+
+    match /payment_reports/{doc} {
+      allow read: if true;
+      allow create, update: if hasValidTenantId() && request.resource.data.reportId is string;
+      allow delete: if true;
+    }
+  }
+}`;
+                try {
+                  await navigator.clipboard.writeText(rulesText);
+                  toast('Reglas copiadas al portapapeles', 'success');
+                } catch {
+                  toast('No se pudo copiar automáticamente', 'error');
+                }
+              }}
+              className="gap-1.5"
+            >
+              <Copy size={14} /> Copiar Reglas
+            </Button>
+            <Button type="button" onClick={() => setRulesModalOpen(false)}>
+              Entendido
+            </Button>
+          </div>
+        </div>
       </Dialog>
     </div>
   );

@@ -1,6 +1,6 @@
 import { loadFirebaseConfig } from './sync/firebaseConfig';
 import { isOfflineEdition } from './offlineEdition';
-import { wipeLocalTenantData } from '../db/db';
+import { db, wipeLocalTenantData } from '../db/db';
 import { nowISO } from './format';
 import { uid } from './id';
 
@@ -8,6 +8,47 @@ export interface TelemetryCheckResult {
   onlineDetected: boolean;
   wiped: boolean;
   error?: string;
+}
+
+/**
+ * Reporta el latido online y el dispositivo activo de la organización a Firestore y a la base local
+ * para que el Super Administrador visualice en vivo si está en línea (web o edición offline con red).
+ */
+export async function reportOnlineHeartbeat(tenantId: string): Promise<void> {
+  if (!tenantId || !navigator.onLine) return;
+  const cfg = loadFirebaseConfig();
+  const now = nowISO();
+  const device = typeof navigator !== 'undefined' ? navigator.userAgent : 'Desconocido';
+  const isOffline = isOfflineEdition();
+
+  const payload: Record<string, unknown> = {
+    lastSeenOnlineAt: now,
+    lastSeenDevice: device,
+  };
+  if (isOffline) {
+    payload.offlineOnlineDetected = true;
+    payload.offlineOnlineDetectedAt = now;
+    payload.offlineDeviceInfo = device;
+  }
+
+  try {
+    const local = await db.tenants.get(tenantId);
+    if (local) {
+      await db.tenants.update(tenantId, payload);
+    }
+  } catch {
+    /* noop */
+  }
+
+  if (!cfg) return;
+  try {
+    const { initializeApp, getApps } = await import('firebase/app');
+    const { getFirestore, doc, setDoc } = await import('firebase/firestore');
+    const fs = getFirestore(getApps()[0] ?? initializeApp(cfg));
+    await setDoc(doc(fs, 'tenants', tenantId), payload, { merge: true });
+  } catch {
+    /* silencio en fallos transitorios de red */
+  }
 }
 
 /**

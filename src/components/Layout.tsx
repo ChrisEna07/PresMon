@@ -7,6 +7,8 @@ import {
   Calculator,
   Check,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   ClipboardList,
   Clock,
   Cloud,
@@ -19,6 +21,7 @@ import {
   Lock,
   LogOut,
   Megaphone,
+  Menu,
   MessageCircle,
   ScrollText,
   Settings,
@@ -49,7 +52,11 @@ import {
   CHRIZDEV_WHATSAPP_PHONE,
 } from '../lib/share';
 import { computeMonthlyInvoice } from '../lib/billingEngine';
-import { checkOfflineTelemetry, reportPurgeConfirmation } from '../lib/offlineTelemetry';
+import {
+  checkOfflineTelemetry,
+  reportOnlineHeartbeat,
+  reportPurgeConfirmation,
+} from '../lib/offlineTelemetry';
 import { compressImageFile } from '../lib/imageSupport';
 import { cn, formatCOP, formatDateShort, todayStr } from '../lib/format';
 import { useToast } from './ui/toast';
@@ -95,6 +102,28 @@ export default function Layout() {
   const [bannerDismissedFor, setBannerDismissedFor] = useState('');
   const [noticeDismissedAt, setNoticeDismissedAt] = useState('');
   const [paymentBannerDismissed, setPaymentBannerDismissed] = useState(false);
+
+  // Estado del menú vertical (plegable/desplegable) y versión móvil
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('presmon_sidebar_collapsed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+
+  function toggleSidebar() {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('presmon_sidebar_collapsed', String(next));
+      } catch {
+        /* noop */
+      }
+      return next;
+    });
+  }
 
   // Modales de cuentas bancarias y reporte de pago
   const [bankAccountsModalOpen, setBankAccountsModalOpen] = useState(false);
@@ -389,6 +418,9 @@ export default function Layout() {
       navigate('/login', { replace: true });
       return false;
     }
+    if (session?.tenantId && online) {
+      void reportOnlineHeartbeat(session.tenantId);
+    }
     void pollRemoteControl().catch(() => undefined);
     return true;
   }
@@ -468,61 +500,196 @@ export default function Layout() {
 
   return (
     <div className="min-h-full">
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 flex-col bg-slate-900 lg:flex">
-        <div className="flex items-center gap-2.5 px-5 py-5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-500 font-black text-white">
-            PM
+      {/* Barra lateral Desktop (plegable / desplegable con persistencia) */}
+      <aside
+        className={cn(
+          'fixed inset-y-0 left-0 z-30 hidden flex-col bg-slate-900 lg:flex transition-all duration-300 ease-in-out',
+          sidebarCollapsed ? 'w-16' : 'w-60',
+        )}
+      >
+        <div className="flex items-center justify-between px-3 py-4 border-b border-slate-800/80">
+          <div className={cn('flex items-center gap-2.5', sidebarCollapsed && 'justify-center w-full')}>
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-500 font-black text-white shadow-sm">
+              PM
+            </div>
+            {!sidebarCollapsed && (
+              <div className="min-w-0 flex-1">
+                <p className="leading-tight font-bold text-white truncate">PresMon</p>
+                <p className="text-[10px] tracking-wide text-slate-400 uppercase truncate">by ChrizDev</p>
+              </div>
+            )}
           </div>
-          <div>
-            <p className="leading-tight font-bold text-white">PresMon</p>
-            <p className="text-[10px] tracking-wide text-slate-400 uppercase">by ChrizDev</p>
-          </div>
+          {!sidebarCollapsed && (
+            <button
+              onClick={toggleSidebar}
+              title="Plegar menú lateral"
+              className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white transition-colors cursor-pointer"
+            >
+              <ChevronLeft size={18} />
+            </button>
+          )}
         </div>
-        <nav className="flex-1 space-y-0.5 overflow-y-auto px-3">
+
+        {sidebarCollapsed && (
+          <div className="flex justify-center pt-2 pb-1">
+            <button
+              onClick={toggleSidebar}
+              title="Desplegar menú lateral"
+              className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white transition-colors cursor-pointer"
+            >
+              <ChevronRight size={18} />
+            </button>
+          </div>
+        )}
+
+        <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-3">
           {navItems.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
               end={item.end}
+              title={sidebarCollapsed ? item.label : undefined}
               className={({ isActive }) =>
                 cn(
-                  'flex items-center justify-between rounded-lg px-3 py-2.5 text-sm font-medium transition-colors',
-                  isActive ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200',
+                  'group relative flex items-center rounded-xl py-2.5 text-sm font-medium transition-colors',
+                  sidebarCollapsed ? 'justify-center px-2' : 'justify-between px-3',
+                  isActive
+                    ? 'bg-slate-800 text-white shadow-inner font-semibold'
+                    : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200',
                 )
               }
             >
-              <div className="flex items-center gap-3 min-w-0">
-                <item.icon size={17} className="shrink-0" />
-                <span className="truncate">{item.label}</span>
+              <div className={cn('flex items-center gap-3 min-w-0', sidebarCollapsed && 'justify-center')}>
+                <item.icon
+                  size={18}
+                  className={cn('shrink-0 transition-transform group-hover:scale-110', sidebarCollapsed && 'mx-auto')}
+                />
+                {!sidebarCollapsed && <span className="truncate">{item.label}</span>}
               </div>
               {typeof item.badge === 'number' && item.badge > 0 && (
-                <span className="rounded-full bg-red-600 px-2 py-0.5 text-xs font-bold text-white animate-pulse shrink-0">
-                  {item.badge}
-                </span>
+                sidebarCollapsed ? (
+                  <span className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-red-500 animate-pulse" />
+                ) : (
+                  <span className="rounded-full bg-red-600 px-2 py-0.5 text-xs font-bold text-white animate-pulse shrink-0">
+                    {item.badge}
+                  </span>
+                )
               )}
             </NavLink>
           ))}
         </nav>
-        <div className="border-t border-slate-800 p-3">
-          <div className="mb-2 px-2">
-            <p className="truncate text-sm font-semibold text-slate-200">{session?.displayName}</p>
-            <p className="truncate text-[11px] text-slate-500">{session?.tenantName}</p>
-          </div>
+
+        <div className="border-t border-slate-800 p-2">
+          {!sidebarCollapsed && (
+            <div className="mb-2 px-2">
+              <p className="truncate text-sm font-semibold text-slate-200">{session?.displayName}</p>
+              <p className="truncate text-[11px] text-slate-500">{session?.tenantName}</p>
+            </div>
+          )}
           <button
             onClick={() => {
               logout();
               navigate('/login');
             }}
-            className="flex w-full cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-sm text-slate-400 hover:bg-slate-800/60 hover:text-red-300"
+            title={sidebarCollapsed ? `Cerrar sesión (${session?.displayName})` : undefined}
+            className={cn(
+              'flex cursor-pointer items-center rounded-lg text-sm text-slate-400 hover:bg-slate-800/60 hover:text-red-300 transition-colors',
+              sidebarCollapsed ? 'w-full justify-center p-2.5' : 'w-full gap-3 px-3 py-2',
+            )}
           >
-            <LogOut size={16} /> Cerrar sesión
+            <LogOut size={16} />
+            {!sidebarCollapsed && <span>Cerrar sesión</span>}
           </button>
         </div>
       </aside>
 
-      <div className="lg:pl-60">
+      {/* Menú deslizante / desplegable móvil */}
+      {mobileDrawerOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden">
+          <div
+            className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs transition-opacity"
+            onClick={() => setMobileDrawerOpen(false)}
+          />
+          <aside className="fixed inset-y-0 left-0 w-72 max-w-[85vw] flex flex-col bg-slate-900 shadow-2xl z-50">
+            <div className="flex items-center justify-between px-4 py-4 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-500 font-black text-white">
+                  PM
+                </div>
+                <div>
+                  <p className="leading-tight font-bold text-white">PresMon</p>
+                  <p className="text-[10px] tracking-wide text-slate-400 uppercase">by ChrizDev</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setMobileDrawerOpen(false)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white cursor-pointer"
+                aria-label="Cerrar menú"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4">
+              {navItems.map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  end={item.end}
+                  onClick={() => setMobileDrawerOpen(false)}
+                  className={({ isActive }) =>
+                    cn(
+                      'flex items-center justify-between rounded-xl px-3.5 py-3 text-sm font-medium transition-colors',
+                      isActive
+                        ? 'bg-slate-800 text-white font-semibold'
+                        : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200',
+                    )
+                  }
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <item.icon size={18} className="shrink-0" />
+                    <span className="truncate">{item.label}</span>
+                  </div>
+                  {typeof item.badge === 'number' && item.badge > 0 && (
+                    <span className="rounded-full bg-red-600 px-2.5 py-0.5 text-xs font-bold text-white animate-pulse shrink-0">
+                      {item.badge}
+                    </span>
+                  )}
+                </NavLink>
+              ))}
+            </nav>
+
+            <div className="border-t border-slate-800 p-4">
+              <div className="mb-3 px-1">
+                <p className="truncate text-sm font-semibold text-slate-200">{session?.displayName}</p>
+                <p className="truncate text-xs text-slate-400">{session?.tenantName}</p>
+              </div>
+              <button
+                onClick={() => {
+                  setMobileDrawerOpen(false);
+                  logout();
+                  navigate('/login');
+                }}
+                className="flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-slate-400 hover:bg-slate-800 hover:text-red-400 transition-colors"
+              >
+                <LogOut size={18} /> Cerrar sesión
+              </button>
+            </div>
+          </aside>
+        </div>
+      )}
+
+      <div className={cn('transition-all duration-300 ease-in-out', sidebarCollapsed ? 'lg:pl-16' : 'lg:pl-60')}>
         <header className="sticky top-0 z-20 flex h-13 items-center gap-3 border-b border-slate-200 bg-white/90 px-4 py-2.5 backdrop-blur">
-          <div className="flex items-center gap-1.5 lg:hidden">
+          <div className="flex items-center gap-2 lg:hidden">
+            <button
+              type="button"
+              onClick={() => setMobileDrawerOpen(true)}
+              className="rounded-lg p-1 text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors cursor-pointer"
+              aria-label="Abrir menú de navegación"
+            >
+              <Menu size={22} />
+            </button>
             <div className="flex h-7 w-7 items-center justify-center rounded-md bg-emerald-500 text-xs font-black text-white">
               PM
             </div>

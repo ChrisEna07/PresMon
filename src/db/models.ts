@@ -143,6 +143,10 @@ export interface Tenant extends BaseRecord {
   paymentBannerDismissible?: boolean;
   /** Fecha/hora límite de persistencia para el aviso de cobro. */
   paymentBannerExpiresAt?: string;
+  /** Telemetría en vivo: fecha/hora de la última actividad en línea (online y offline). */
+  lastSeenOnlineAt?: string;
+  /** Telemetría en vivo: información del dispositivo/navegador que registró actividad en línea. */
+  lastSeenDevice?: string;
 }
 
 export interface UserAccount extends BaseRecord {

@@ -148,13 +148,24 @@ export async function purgeLocalTenantData(tenantId: string): Promise<void> {
 export async function wipeLocalTenantData(tenantId: string): Promise<void> {
   await purgeLocalTenantData(tenantId);
   try {
+    const t = await db.tenants.get(tenantId);
+    if (t) {
+      await db.tenants.put({
+        ...t,
+        wipeLocalData: false,
+        wipeConfirmedAt: nowISO(),
+        offlineBlocked: true,
+        updatedAt: nowISO(),
+        syncStatus: 'SYNCED',
+      });
+    }
     localStorage.removeItem(`presmon_last_sync_${tenantId}`);
+    localStorage.removeItem('presmon_edition');
     const rawSession = localStorage.getItem('presmon_session_v1');
     if (rawSession) {
       const parsed = JSON.parse(rawSession) as { tenantId?: string };
       if (parsed.tenantId === tenantId) {
         localStorage.removeItem('presmon_session_v1');
-        localStorage.removeItem('presmon_edition');
       }
     }
   } catch {
