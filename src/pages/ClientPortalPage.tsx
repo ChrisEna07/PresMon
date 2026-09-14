@@ -19,6 +19,7 @@ import {
 import type { DocumentType, LoanRequest, Tenant } from '../db/models';
 import { db } from '../db/db';
 import { loadFirebaseConfig } from '../lib/sync/firebaseConfig';
+import { deepSanitize } from '../lib/sync/syncEngine';
 import { uid } from '../lib/id';
 import { compressImageFile } from '../lib/imageSupport';
 import { Badge } from '../components/ui/badge';
@@ -363,7 +364,7 @@ export default function ClientPortalPage() {
           const fs = await getFs();
           if (fs) {
             const { doc, setDoc } = await import('firebase/firestore');
-            await setDoc(doc(fs, 'loan_requests', requestId), { ...record, syncStatus: 'SYNCED' });
+            await setDoc(doc(fs, 'loan_requests', requestId), deepSanitize({ ...record, syncStatus: 'SYNCED' }));
             deliveredToCloud = true;
           }
         } catch {

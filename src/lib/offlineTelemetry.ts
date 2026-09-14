@@ -2,6 +2,7 @@ import { loadFirebaseConfig } from './sync/firebaseConfig';
 import { isOfflineEdition } from './offlineEdition';
 import { db, wipeLocalTenantData } from '../db/db';
 import type { Tenant } from '../db/models';
+import { deepSanitize } from './sync/syncEngine';
 import { nowISO } from './format';
 import { uid } from './id';
 
@@ -46,7 +47,7 @@ export async function reportOnlineHeartbeat(tenantId: string): Promise<void> {
     const { initializeApp, getApps } = await import('firebase/app');
     const { getFirestore, doc, setDoc } = await import('firebase/firestore');
     const fs = getFirestore(getApps()[0] ?? initializeApp(cfg));
-    await setDoc(doc(fs, 'tenants', tenantId), payload, { merge: true });
+    await setDoc(doc(fs, 'tenants', tenantId), deepSanitize({ ...payload }), { merge: true });
   } catch {
     /* silencio en fallos transitorios de red */
   }
@@ -69,19 +70,19 @@ export async function reportPurgeConfirmation(tenantId: string): Promise<boolean
 
     await setDoc(
       doc(fs, 'tenants', tenantId),
-      {
+      deepSanitize({
         wipeConfirmedAt: confirmedAt,
         wipeConfirmedDevice: device,
         wipeLocalData: false, // Marca la orden como completada
         updatedAt: confirmedAt,
-      },
+      }),
       { merge: true },
     );
 
     // Registro en auditoría remota
     await setDoc(
       doc(fs, 'audit_logs', uid()),
-      {
+      deepSanitize({
         logId: uid(),
         tenantId,
         action: 'OFFLINE_WIPE_CONFIRMED',
@@ -97,7 +98,7 @@ export async function reportPurgeConfirmation(tenantId: string): Promise<boolean
         createdAt: confirmedAt,
         updatedAt: confirmedAt,
         syncStatus: 'SYNCED',
-      },
+      }),
       { merge: true },
     );
 
@@ -158,19 +159,19 @@ export async function checkOfflineTelemetry(tenantId: string): Promise<Telemetry
     if (isOffline) {
       await setDoc(
         tenantRef,
-        {
+        deepSanitize({
           offlineOnlineDetected: true,
           offlineOnlineDetectedAt: detectedAt,
           offlineDeviceInfo: device,
           updatedAt: detectedAt,
-        },
+        }),
         { merge: true },
       );
 
       // Bitácora de auditoría en Firestore
       await setDoc(
         doc(fs, 'audit_logs', uid()),
-        {
+        deepSanitize({
           logId: uid(),
           tenantId,
           action: 'OFFLINE_ONLINE_DETECTED',
@@ -186,7 +187,7 @@ export async function checkOfflineTelemetry(tenantId: string): Promise<Telemetry
           createdAt: detectedAt,
           updatedAt: detectedAt,
           syncStatus: 'SYNCED',
-        },
+        }),
         { merge: true },
       );
     }

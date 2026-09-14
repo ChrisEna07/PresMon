@@ -19,7 +19,7 @@ import {
 import type { DocumentType, Frequency, LoanRequest } from '../db/models';
 import type { Borrower } from '../db/models';
 import { db, saveBorrower, saveInstallments, saveLoan } from '../db/db';
-import { isSyncConfigured, runSync } from '../lib/sync/syncEngine';
+import { isSyncConfigured, runSync, deepSanitize } from '../lib/sync/syncEngine';
 import { useAuth } from '../store/auth';
 import { uid } from '../lib/id';
 import { computeSchedule, summarize, FREQUENCY_LABELS, type LoanInput } from '../lib/financialCalculations';
@@ -213,7 +213,7 @@ export default function RequestsPage() {
       const { getFirestore, doc, setDoc } = await import('firebase/firestore');
       const fs = getFirestore(getApps()[0] ?? initializeApp(cfg));
       const fresh = await db.loan_requests.get(requestId);
-      if (fresh) await setDoc(doc(fs, 'loan_requests', requestId), { ...fresh, syncStatus: 'SYNCED' });
+      if (fresh) await setDoc(doc(fs, 'loan_requests', requestId), deepSanitize({ ...fresh, syncStatus: 'SYNCED' }));
     } catch {
       /* el ciclo normal de sincronización lo subirá más tarde */
     }
