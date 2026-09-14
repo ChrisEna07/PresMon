@@ -430,7 +430,21 @@ export default function Layout() {
     }
   }
 
-  const navItems = [
+  const pendingReportsGlobalCount = useLiveQuery(
+    () =>
+      session?.role === 'SUPER_ADMIN'
+        ? db.payment_reports.where('status').equals('PENDING').count()
+        : Promise.resolve(0),
+    [session?.role],
+  );
+
+  const navItems: Array<{
+    to: string;
+    label: string;
+    icon: any;
+    end?: boolean;
+    badge?: number;
+  }> = [
     { to: '/', label: 'Inicio', icon: LayoutDashboard, end: true },
     { to: '/borrowers', label: 'Prestatarios', icon: Users },
     { to: '/loans', label: 'Préstamos', icon: HandCoins },
@@ -441,8 +455,15 @@ export default function Layout() {
     { to: '/settings', label: 'Ajustes', icon: Settings },
   ];
   if (session?.role === 'SUPER_ADMIN') {
-    navItems.push({ to: '/super-admin', label: 'Super Admin', icon: ShieldCheck });
-    navItems.push({ to: '/super/plans', label: 'Planes', icon: Wallet });
+    navItems.push({ to: '/super-admin', label: 'Organizaciones', icon: ShieldCheck, end: true });
+    navItems.push({ to: '/super/plans', label: 'Planes de Cobro', icon: Wallet });
+    navItems.push({ to: '/super-admin?tab=banners', label: 'Banners y Avisos', icon: Megaphone });
+    navItems.push({
+      to: '/super-admin?tab=reports',
+      label: 'Comprobantes',
+      icon: CreditCard,
+      badge: (pendingReportsGlobalCount ?? 0) > 0 ? (pendingReportsGlobalCount ?? 0) : undefined,
+    });
   }
 
   return (
@@ -465,13 +486,20 @@ export default function Layout() {
               end={item.end}
               className={({ isActive }) =>
                 cn(
-                  'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors',
+                  'flex items-center justify-between rounded-lg px-3 py-2.5 text-sm font-medium transition-colors',
                   isActive ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200',
                 )
               }
             >
-              <item.icon size={17} />
-              {item.label}
+              <div className="flex items-center gap-3 min-w-0">
+                <item.icon size={17} className="shrink-0" />
+                <span className="truncate">{item.label}</span>
+              </div>
+              {typeof item.badge === 'number' && item.badge > 0 && (
+                <span className="rounded-full bg-red-600 px-2 py-0.5 text-xs font-bold text-white animate-pulse shrink-0">
+                  {item.badge}
+                </span>
+              )}
             </NavLink>
           ))}
         </nav>
@@ -1114,13 +1142,18 @@ export default function Layout() {
             end={item.end}
             className={({ isActive }) =>
               cn(
-                'flex min-w-16 flex-1 flex-col items-center gap-0.5 px-2 py-2 text-[10px] font-medium',
+                'relative flex min-w-16 flex-1 flex-col items-center gap-0.5 px-2 py-2 text-[10px] font-medium',
                 isActive ? 'text-emerald-600' : 'text-slate-400',
               )
             }
           >
             <item.icon size={19} />
-            {item.label}
+            <span className="truncate max-w-16 text-center">{item.label}</span>
+            {typeof item.badge === 'number' && item.badge > 0 && (
+              <span className="absolute top-1 right-2 rounded-full bg-red-600 px-1.5 py-0.2 text-[9px] font-bold text-white">
+                {item.badge}
+              </span>
+            )}
           </NavLink>
         ))}
       </nav>

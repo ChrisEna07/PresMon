@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
   AlertTriangle,
@@ -123,7 +124,12 @@ export default function SuperAdminPage() {
   const [noticeLevel, setNoticeLevel] = useState<NoticeLevel>('info');
   const [noticeAction, setNoticeAction] = useState<'send' | 'clear'>('send');
 
-  const [activeTab, setActiveTab] = useState<'tenants' | 'banners' | 'reports'>('tenants');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlTab = searchParams.get('tab');
+  const [activeTab, setActiveTab] = useState<'tenants' | 'banners' | 'reports'>(() => {
+    if (urlTab === 'banners' || urlTab === 'reports') return urlTab;
+    return 'tenants';
+  });
 
   const paymentReports = useLiveQuery(() => db.payment_reports.reverse().sortBy('createdAt'), []);
   const pendingReportsCount = useMemo(
@@ -132,7 +138,31 @@ export default function SuperAdminPage() {
   );
 
   // Estados para Banners y Cobros
-  const [selectedBannerTenantId, setSelectedBannerTenantId] = useState<string>('');
+  const [selectedBannerTenantId, setSelectedBannerTenantId] = useState<string>(
+    searchParams.get('tenantId') || '',
+  );
+
+  useEffect(() => {
+    const tabParam = searchParams.get('tab');
+    if (tabParam === 'banners' || tabParam === 'reports' || tabParam === 'tenants') {
+      setActiveTab(tabParam);
+    }
+    const tenantParam = searchParams.get('tenantId');
+    if (tenantParam) {
+      setSelectedBannerTenantId(tenantParam);
+    }
+  }, [searchParams]);
+
+  function handleSelectTab(tab: 'tenants' | 'banners' | 'reports') {
+    setActiveTab(tab);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (tab === 'tenants') next.delete('tab');
+      else next.set('tab', tab);
+      return next;
+    });
+  }
+
   const bannerTenant = useMemo(() => {
     if (!tenants || tenants.length === 0) return null;
     return (
@@ -897,7 +927,7 @@ export default function SuperAdminPage() {
       <div className="flex items-center gap-2 border-b border-slate-200 mt-4 mb-6 overflow-x-auto">
         <button
           type="button"
-          onClick={() => setActiveTab('tenants')}
+          onClick={() => handleSelectTab('tenants')}
           className={cn(
             'flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 transition-all cursor-pointer whitespace-nowrap',
             activeTab === 'tenants'
@@ -909,7 +939,7 @@ export default function SuperAdminPage() {
         </button>
         <button
           type="button"
-          onClick={() => setActiveTab('banners')}
+          onClick={() => handleSelectTab('banners')}
           className={cn(
             'flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 transition-all cursor-pointer whitespace-nowrap',
             activeTab === 'banners'
@@ -921,7 +951,7 @@ export default function SuperAdminPage() {
         </button>
         <button
           type="button"
-          onClick={() => setActiveTab('reports')}
+          onClick={() => handleSelectTab('reports')}
           className={cn(
             'flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 transition-all cursor-pointer whitespace-nowrap',
             activeTab === 'reports'

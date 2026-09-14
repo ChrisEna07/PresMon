@@ -1,11 +1,17 @@
 import { useMemo, useState } from 'react';
+import { NavLink } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
+  ArrowUpRight,
   BadgeCheck,
+  Building2,
   CalendarPlus,
   Cloud,
+  CreditCard,
+  Megaphone,
   Plus,
   Save,
+  ShieldCheck,
   Trash2,
   Wallet,
 } from 'lucide-react';
@@ -40,6 +46,10 @@ export default function SuperPlansPage() {
     [],
   );
   const plans = useLiveQuery(async () => db.plans.toArray() as Promise<ServicePlan[]>, []);
+  const pendingReportsCount = useLiveQuery(
+    () => db.payment_reports.where('status').equals('PENDING').count(),
+    [],
+  );
 
   const [tenantId, setTenantId] = useState('');
   const [name, setName] = useState('');
@@ -251,6 +261,38 @@ export default function SuperPlansPage() {
         description="Cobros de las organizaciones a ChrizDev · cuotas personalizables por cliente"
       />
 
+      <div className="flex items-center gap-2 border-b border-slate-200 mt-4 mb-6 overflow-x-auto">
+        <NavLink
+          to="/super/plans"
+          className="flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 border-emerald-600 text-emerald-700 bg-emerald-50/50 rounded-t-lg transition-all whitespace-nowrap"
+        >
+          <Wallet size={16} /> Planes de Servicio
+        </NavLink>
+        <NavLink
+          to="/super-admin?tab=banners"
+          className="flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 border-transparent text-slate-500 hover:text-slate-800 transition-all whitespace-nowrap"
+        >
+          <Megaphone size={16} /> Banners, Avisos y Cobros
+        </NavLink>
+        <NavLink
+          to="/super-admin?tab=reports"
+          className="flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 border-transparent text-slate-500 hover:text-slate-800 transition-all whitespace-nowrap"
+        >
+          <CreditCard size={16} /> Comprobantes de Pago
+          {(pendingReportsCount ?? 0) > 0 && (
+            <span className="rounded-full bg-red-600 px-2 py-0.5 text-xs font-bold text-white animate-pulse">
+              {pendingReportsCount}
+            </span>
+          )}
+        </NavLink>
+        <NavLink
+          to="/super-admin"
+          className="flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 border-transparent text-slate-500 hover:text-slate-800 transition-all whitespace-nowrap"
+        >
+          <ShieldCheck size={16} /> Organizaciones
+        </NavLink>
+      </div>
+
       <Card className="mb-4">
         <CardContent className="py-4">
           <Label>Organización</Label>
@@ -317,6 +359,32 @@ export default function SuperPlansPage() {
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
               <p className="text-[11px] font-semibold tracking-wide text-amber-600 uppercase">Por cobrar</p>
               <p className="mt-1 font-bold text-amber-700">{formatCOP(summary.pendingTotal)}</p>
+            </div>
+          </div>
+
+          {/* Accesos directos a Banners y Cuentas para esta organización */}
+          <div className="mb-4 rounded-xl border border-sky-200 bg-gradient-to-r from-sky-50 via-white to-indigo-50 p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+            <div>
+              <p className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                <Megaphone size={14} className="text-sky-600" /> Banners, Cuentas Bancarias y Comprobantes
+              </p>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                Configura los avisos en pantalla, el WhatsApp de cobros, las cuentas para depósito directo o revisa comprobantes de esta organización.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap shrink-0">
+              <NavLink
+                to={`/super-admin?tab=banners&tenantId=${tenantId}`}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-white border border-sky-300 px-3 py-1.5 text-xs font-semibold text-sky-800 hover:bg-sky-100/60 shadow-xs transition-colors"
+              >
+                <Megaphone size={13} /> Gestionar Banners y Cuentas <ArrowUpRight size={13} />
+              </NavLink>
+              <NavLink
+                to="/super-admin?tab=reports"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 shadow-xs transition-colors"
+              >
+                <CreditCard size={13} /> Ver Comprobantes <ArrowUpRight size={13} />
+              </NavLink>
             </div>
           </div>
 
