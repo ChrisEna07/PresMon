@@ -29,7 +29,10 @@ export type AuditAction =
   | 'SYNC_COMPLETED'
   | 'SYNC_CONFLICT'
   | 'OFFLINE_WIPE_CONFIRMED'
-  | 'OFFLINE_ONLINE_DETECTED';
+  | 'OFFLINE_ONLINE_DETECTED'
+  | 'PAYMENT_REPORT_CREATED'
+  | 'PAYMENT_REPORT_APPROVED'
+  | 'PAYMENT_REPORT_REJECTED';
 
 export interface BaseRecord {
   createdAt: string;
@@ -40,9 +43,48 @@ export interface BaseRecord {
 export type NoticeLevel = 'info' | 'warning' | 'danger';
 
 export interface TenantNotice {
+  title?: string;
   message: string;
   level: NoticeLevel;
   updatedAt: string;
+  /** Persistencia de tiempo: fecha/hora ISO límite. Si caduca, no se muestra. */
+  expiresAt?: string;
+  /**
+   * Si es true, el usuario puede descartar temporalmente con el botón (X).
+   * Si es false, queda persistente e inamovible hasta que pague o se desactive.
+   */
+  dismissible?: boolean;
+  active?: boolean;
+}
+
+export interface BankAccountInfo {
+  id: string;
+  bankName: string;
+  accountType: 'SAVINGS' | 'CHECKING' | 'WALLET' | 'OTHER';
+  accountNumber: string;
+  holderName: string;
+  holderDoc?: string;
+  notes?: string;
+  active: boolean;
+}
+
+export type PaymentReportStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+
+export interface PaymentReport extends BaseRecord {
+  reportId: string;
+  tenantId: string;
+  amount: number;
+  paymentDate: string;
+  referenceNumber: string;
+  bankName?: string;
+  accountNumber?: string;
+  /** Captura de pantalla o comprobante en base64 comprimido */
+  receiptImageBase64?: string;
+  notes?: string;
+  status: PaymentReportStatus;
+  reviewedAt?: string;
+  reviewedBy?: string;
+  rejectionReason?: string;
 }
 
 export interface OfflineLicenseInfo {
@@ -93,6 +135,14 @@ export interface Tenant extends BaseRecord {
   offlineOnlineDetectedAt?: string;
   /** Datos del dispositivo/navegador detectado en línea para la app offline. */
   offlineDeviceInfo?: string;
+  /** Número de WhatsApp personalizado de cobros (ej. 3183517802). */
+  paymentWhatsAppPhone?: string;
+  /** Cuentas bancarias para depósito directo configuradas por el Super Admin. */
+  bankAccounts?: BankAccountInfo[];
+  /** Si es true, el banner de cobro muestra botón (X). Si es false, es consistente hasta que pague. */
+  paymentBannerDismissible?: boolean;
+  /** Fecha/hora límite de persistencia para el aviso de cobro. */
+  paymentBannerExpiresAt?: string;
 }
 
 export interface UserAccount extends BaseRecord {

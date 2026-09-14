@@ -5,6 +5,7 @@ import type {
   Installment,
   Loan,
   LoanRequest,
+  PaymentReport,
   PdfBlob,
   ServicePlan,
   Tenant,
@@ -30,6 +31,7 @@ class PresmonDB extends Dexie {
   pdf_blobs!: Table<PdfBlob, string>;
   plans!: Table<ServicePlan, string>;
   loan_requests!: Table<LoanRequest, string>;
+  payment_reports!: Table<PaymentReport, string>;
 
   constructor() {
     super('presmon-db');
@@ -55,6 +57,10 @@ class PresmonDB extends Dexie {
       loan_requests:
         'requestId, tenantId, status, documentNumber, createdAt, syncStatus, [tenantId+status], [tenantId+documentNumber]',
     });
+    this.version(4).stores({
+      payment_reports:
+        'reportId, tenantId, status, createdAt, syncStatus, [tenantId+status]',
+    });
   }
 }
 
@@ -73,6 +79,7 @@ const TENANT_TABLES = [
   'audit_logs',
   'plans',
   'loan_requests',
+  'payment_reports',
 ] as const;
 
 const TENANT_KEY_OF: Record<(typeof TENANT_TABLES)[number], string> = {
@@ -84,6 +91,7 @@ const TENANT_KEY_OF: Record<(typeof TENANT_TABLES)[number], string> = {
   audit_logs: 'logId',
   plans: 'planId',
   loan_requests: 'requestId',
+  payment_reports: 'reportId',
 };
 
 export async function deleteTenantCascade(tenantId: string): Promise<{

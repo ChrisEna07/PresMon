@@ -1,29 +1,45 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
   AlertTriangle,
   Building2,
+  Check,
+  CheckCircle,
+  Clock,
   Copy,
+  CreditCard,
   DatabaseZap,
+  Eye,
   Globe,
   HardDriveDownload,
+  Image as ImageIcon,
   KeyRound,
+  Landmark,
   Link2,
   Lock,
   LockOpen,
   Megaphone,
   Pencil,
+  Phone,
   Plus,
   ShieldCheck,
   Trash2,
+  XCircle,
 } from 'lucide-react';
-import type { NoticeLevel, ServicePlan, Tenant } from '../db/models';
+import type {
+  BankAccountInfo,
+  NoticeLevel,
+  PaymentReport,
+  PaymentReportStatus,
+  ServicePlan,
+  Tenant,
+} from '../db/models';
 import { db, deleteTenantCascade, saveTenant, saveUser, wipeLocalTenantData } from '../db/db';
 import { useAuth } from '../store/auth';
 import { sha256Hex } from '../lib/crypto';
 import { logAudit } from '../lib/auditLogger';
 import { uid } from '../lib/id';
-import { formatCOP, formatDateTime } from '../lib/format';
+import { cn, formatCOP, formatDateTime } from '../lib/format';
 import { computeMonthlyInvoice } from '../lib/billingEngine';
 import { PageHeader, StatCard } from '../components/misc';
 import { Badge } from '../components/ui/badge';
@@ -36,6 +52,12 @@ import { useToast } from '../components/ui/toast';
 import { isSyncConfigured, purgeDocsFromCloud, runSync } from '../lib/sync/syncEngine';
 import { exportBackup } from '../lib/backup';
 import { generateLicenseKey, offlineLinkFor } from '../lib/offlineEdition';
+import {
+  CHRIZDEV_WHATSAPP_DISPLAY,
+  CHRIZDEV_WHATSAPP_PHONE,
+  CHRIZDEV_WHATSAPP_RAW,
+  openWhatsApp,
+} from '../lib/share';
 
 function pushToCloud(): void {
   void runSync().catch(() => {
@@ -100,6 +122,58 @@ export default function SuperAdminPage() {
   const [noticeText, setNoticeText] = useState('');
   const [noticeLevel, setNoticeLevel] = useState<NoticeLevel>('info');
   const [noticeAction, setNoticeAction] = useState<'send' | 'clear'>('send');
+
+  const [activeTab, setActiveTab] = useState<'tenants' | 'banners' | 'reports'>('tenants');
+
+  const paymentReports = useLiveQuery(() => db.payment_reports.reverse().sortBy('createdAt'), []);
+  const pendingReportsCount = useMemo(
+    () => (paymentReports ?? []).filter((r) => r.status === 'PENDING').length,
+    [paymentReports],
+  );
+
+  // Estados para Banners y Cobros
+  const [selectedBannerTenantId, setSelectedBannerTenantId] = useState<string>('');
+  const bannerTenant = useMemo(() => {
+    if (!tenants || tenants.length === 0) return null;
+    return (
+      tenants.find((t) => t.tenantId === selectedBannerTenantId) ?? tenants[0]
+    );
+  }, [tenants, selectedBannerTenantId]);
+
+  const [bannerTitle, setBannerTitle] = useState('');
+  const [bannerMessage, setBannerMessage] = useState('');
+  const [bannerLevel, setBannerLevel] = useState<NoticeLevel>('warning');
+  const [bannerExpiresAt, setBannerExpiresAt] = useState('');
+  const [bannerDismissible, setBannerDismissible] = useState(false);
+  const [paymentPhone, setPaymentPhone] = useState('');
+  const [paymentDismissible, setPaymentDismissible] = useState(false);
+
+  useEffect(() => {
+    if (!bannerTenant) return;
+    setBannerTitle(bannerTenant.notice?.title ?? '');
+    setBannerMessage(bannerTenant.notice?.message ?? '');
+    setBannerLevel(bannerTenant.notice?.level ?? 'warning');
+    setBannerExpiresAt(bannerTenant.notice?.expiresAt ?? '');
+    setBannerDismissible(bannerTenant.notice?.dismissible ?? false);
+    setPaymentPhone(bannerTenant.paymentWhatsAppPhone ?? '');
+    setPaymentDismissible(bannerTenant.paymentBannerDismissible ?? false);
+  }, [bannerTenant?.tenantId]);
+
+  // Cuentas bancarias
+  const [bankDialogOpen, setBankDialogOpen] = useState(false);
+  const [editingBankId, setEditingBankId] = useState<string | null>(null);
+  const [bankName, setBankName] = useState('');
+  const [bankAccountType, setBankAccountType] = useState<BankAccountInfo['accountType']>('WALLET');
+  const [bankAccountNumber, setBankAccountNumber] = useState('');
+  const [bankHolderName, setBankHolderName] = useState('');
+  const [bankHolderDoc, setBankHolderDoc] = useState('');
+  const [bankNotes, setBankNotes] = useState('');
+
+  // Comprobantes de pago
+  const [reportFilter, setReportFilter] = useState<'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED'>('PENDING');
+  const [viewingReceipt, setViewingReceipt] = useState<PaymentReport | null>(null);
+  const [rejectReportTarget, setRejectReportTarget] = useState<PaymentReport | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
 
   const portalUrlFor = (tenant: Tenant | null) =>
     typeof window !== 'undefined' && tenant
@@ -448,6 +522,252 @@ export default function SuperAdminPage() {
     );
   }
 
+  async function handleSaveBannerNotice(e: FormEvent) {
+    e.preventDefault();
+    if (!session || !bannerTenant) return;
+    if (!bannerMessage.trim()) {
+      toast('Escribe el mensaje del aviso.', 'error');
+      return;
+    }
+
+    const updated: Tenant = {
+      ...bannerTenant,
+      notice: {
+        title: bannerTitle.trim() || undefined,
+        message: bannerMessage.trim(),
+        level: bannerLevel,
+        expiresAt: bannerExpiresAt.trim() || undefined,
+        dismissible: bannerDismissible,
+        updatedAt: new Date().toISOString(),
+        active: true,
+      },
+      paymentWhatsAppPhone: paymentPhone.trim() || undefined,
+      paymentBannerDismissible: paymentDismissible,
+      updatedAt: new Date().toISOString(),
+      syncStatus: 'PENDING',
+    };
+
+    await saveTenant(updated);
+    await logAudit({
+      tenantId: bannerTenant.tenantId,
+      action: 'TENANT_UPDATED',
+      actorId: session.userId,
+      actorName: session.displayName,
+      entityId: bannerTenant.tenantId,
+      entityType: 'tenants',
+      payloadSnapshot: {
+        campo: 'banner_y_cobros',
+        titulo: bannerTitle,
+        nivel: bannerLevel,
+        expiracion: bannerExpiresAt || 'Permanente',
+        descartable: bannerDismissible,
+        telefonoCobro: paymentPhone || CHRIZDEV_WHATSAPP_PHONE,
+      },
+    });
+    pushToCloud();
+    toast(`Configuración de banner y cobros guardada para «${bannerTenant.name}».`, 'success');
+  }
+
+  async function handleClearBannerNotice() {
+    if (!session || !bannerTenant) return;
+    const updated: Tenant = {
+      ...bannerTenant,
+      notice: undefined,
+      updatedAt: new Date().toISOString(),
+      syncStatus: 'PENDING',
+    };
+    await saveTenant(updated);
+    await logAudit({
+      tenantId: bannerTenant.tenantId,
+      action: 'TENANT_UPDATED',
+      actorId: session.userId,
+      actorName: session.displayName,
+      entityId: bannerTenant.tenantId,
+      entityType: 'tenants',
+      payloadSnapshot: { campo: 'notice', accion: 'clear' },
+    });
+    setBannerTitle('');
+    setBannerMessage('');
+    pushToCloud();
+    toast(`Aviso retirado para «${bannerTenant.name}».`, 'info');
+  }
+
+  function openAddBankModal() {
+    setEditingBankId(null);
+    setBankName('');
+    setBankAccountType('WALLET');
+    setBankAccountNumber('');
+    setBankHolderName('Christian Enao (ChrizDev)');
+    setBankHolderDoc('');
+    setBankNotes('');
+    setBankDialogOpen(true);
+  }
+
+  function openEditBankModal(acc: BankAccountInfo) {
+    setEditingBankId(acc.id);
+    setBankName(acc.bankName);
+    setBankAccountType(acc.accountType);
+    setBankAccountNumber(acc.accountNumber);
+    setBankHolderName(acc.holderName);
+    setBankHolderDoc(acc.holderDoc ?? '');
+    setBankNotes(acc.notes ?? '');
+    setBankDialogOpen(true);
+  }
+
+  async function handleSaveBankAccount(e: FormEvent) {
+    e.preventDefault();
+    if (!session || !bannerTenant) return;
+    if (!bankName.trim() || !bankAccountNumber.trim() || !bankHolderName.trim()) {
+      toast('Completa el banco, número de cuenta y nombre del titular.', 'error');
+      return;
+    }
+
+    const currentAccounts = [...(bannerTenant.bankAccounts ?? [])];
+    if (editingBankId) {
+      const idx = currentAccounts.findIndex((a) => a.id === editingBankId);
+      if (idx >= 0) {
+        currentAccounts[idx] = {
+          ...currentAccounts[idx],
+          bankName: bankName.trim(),
+          accountType: bankAccountType,
+          accountNumber: bankAccountNumber.trim(),
+          holderName: bankHolderName.trim(),
+          holderDoc: bankHolderDoc.trim() || undefined,
+          notes: bankNotes.trim() || undefined,
+        };
+      }
+    } else {
+      currentAccounts.push({
+        id: uid(),
+        bankName: bankName.trim(),
+        accountType: bankAccountType,
+        accountNumber: bankAccountNumber.trim(),
+        holderName: bankHolderName.trim(),
+        holderDoc: bankHolderDoc.trim() || undefined,
+        notes: bankNotes.trim() || undefined,
+        active: true,
+      });
+    }
+
+    await saveTenant({
+      ...bannerTenant,
+      bankAccounts: currentAccounts,
+      updatedAt: new Date().toISOString(),
+      syncStatus: 'PENDING',
+    });
+    pushToCloud();
+    toast('Cuenta bancaria guardada.', 'success');
+    setBankDialogOpen(false);
+  }
+
+  async function handleDeleteBankAccount(accId: string) {
+    if (!session || !bannerTenant) return;
+    const nextAccounts = (bannerTenant.bankAccounts ?? []).filter((a) => a.id !== accId);
+    await saveTenant({
+      ...bannerTenant,
+      bankAccounts: nextAccounts,
+      updatedAt: new Date().toISOString(),
+      syncStatus: 'PENDING',
+    });
+    pushToCloud();
+    toast('Cuenta bancaria eliminada.', 'info');
+  }
+
+  async function handleToggleBankAccount(accId: string) {
+    if (!session || !bannerTenant) return;
+    const nextAccounts = (bannerTenant.bankAccounts ?? []).map((a) =>
+      a.id === accId ? { ...a, active: !a.active } : a,
+    );
+    await saveTenant({
+      ...bannerTenant,
+      bankAccounts: nextAccounts,
+      updatedAt: new Date().toISOString(),
+      syncStatus: 'PENDING',
+    });
+    pushToCloud();
+  }
+
+  async function handleApproveReport(report: PaymentReport) {
+    if (!session) return;
+    const tenant = (tenants ?? []).find((t) => t.tenantId === report.tenantId);
+    const now = new Date().toISOString();
+    const updatedReport: PaymentReport = {
+      ...report,
+      status: 'APPROVED',
+      reviewedAt: now,
+      reviewedBy: session.displayName,
+      updatedAt: now,
+      syncStatus: 'PENDING',
+    };
+    await db.payment_reports.put(updatedReport);
+
+    if (tenant) {
+      await saveTenant({
+        ...tenant,
+        paymentBannerDeactivated: true,
+        updatedAt: now,
+        syncStatus: 'PENDING',
+      });
+    }
+
+    await logAudit({
+      tenantId: report.tenantId,
+      action: 'PAYMENT_REPORT_APPROVED',
+      actorId: session.userId,
+      actorName: session.displayName,
+      entityId: report.reportId,
+      entityType: 'payment_reports',
+      payloadSnapshot: {
+        monto: report.amount,
+        referencia: report.referenceNumber,
+        banco: report.bankName,
+      },
+    });
+
+    pushToCloud();
+    toast(`Pago de ${formatCOP(report.amount)} APROBADO. Se desactivó el banner de cobro para «${tenant?.name ?? 'la organización'}».`, 'success');
+  }
+
+  async function handleRejectReport(e: FormEvent) {
+    e.preventDefault();
+    if (!session || !rejectReportTarget) return;
+    if (!rejectReason.trim()) {
+      toast('Ingresa el motivo del rechazo.', 'error');
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const updatedReport: PaymentReport = {
+      ...rejectReportTarget,
+      status: 'REJECTED',
+      rejectionReason: rejectReason.trim(),
+      reviewedAt: now,
+      reviewedBy: session.displayName,
+      updatedAt: now,
+      syncStatus: 'PENDING',
+    };
+    await db.payment_reports.put(updatedReport);
+
+    await logAudit({
+      tenantId: rejectReportTarget.tenantId,
+      action: 'PAYMENT_REPORT_REJECTED',
+      actorId: session.userId,
+      actorName: session.displayName,
+      entityId: rejectReportTarget.reportId,
+      entityType: 'payment_reports',
+      payloadSnapshot: {
+        monto: rejectReportTarget.amount,
+        referencia: rejectReportTarget.referenceNumber,
+        motivo: rejectReason.trim(),
+      },
+    });
+
+    pushToCloud();
+    toast('Comprobante de pago marcado como RECHAZADO.', 'info');
+    setRejectReportTarget(null);
+    setRejectReason('');
+  }
+
   async function handleCreateTenant(e: FormEvent) {
     e.preventDefault();
     if (!session) return;
@@ -574,7 +894,53 @@ export default function SuperAdminPage() {
         }
       />
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="flex items-center gap-2 border-b border-slate-200 mt-4 mb-6 overflow-x-auto">
+        <button
+          type="button"
+          onClick={() => setActiveTab('tenants')}
+          className={cn(
+            'flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 transition-all cursor-pointer whitespace-nowrap',
+            activeTab === 'tenants'
+              ? 'border-emerald-600 text-emerald-700 bg-emerald-50/50 rounded-t-lg'
+              : 'border-transparent text-slate-500 hover:text-slate-800',
+          )}
+        >
+          <Building2 size={16} /> Organizaciones ({stats.total})
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('banners')}
+          className={cn(
+            'flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 transition-all cursor-pointer whitespace-nowrap',
+            activeTab === 'banners'
+              ? 'border-emerald-600 text-emerald-700 bg-emerald-50/50 rounded-t-lg'
+              : 'border-transparent text-slate-500 hover:text-slate-800',
+          )}
+        >
+          <Megaphone size={16} /> Banners, Avisos y Cobros
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('reports')}
+          className={cn(
+            'flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 transition-all cursor-pointer whitespace-nowrap',
+            activeTab === 'reports'
+              ? 'border-emerald-600 text-emerald-700 bg-emerald-50/50 rounded-t-lg'
+              : 'border-transparent text-slate-500 hover:text-slate-800',
+          )}
+        >
+          <CreditCard size={16} /> Comprobantes de Pago
+          {pendingReportsCount > 0 && (
+            <span className="rounded-full bg-red-600 px-2 py-0.5 text-xs font-bold text-white animate-pulse">
+              {pendingReportsCount}
+            </span>
+          )}
+        </button>
+      </div>
+
+      {activeTab === 'tenants' && (
+        <>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label="Organizaciones" value={String(stats.total)} icon={Building2} />
         <StatCard label="Activas" value={String(stats.active)} icon={ShieldCheck} tone="emerald" />
         <StatCard label="Portal habilitado" value={String(stats.portal)} icon={Globe} tone="sky" />
@@ -736,12 +1102,10 @@ export default function SuperAdminPage() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      title="Enviar / retirar aviso en su panel"
+                      title="Administrar banner, aviso y cobro en su panel"
                       onClick={() => {
-                        setNoticeTarget(t);
-                        setNoticeAction('send');
-                        setNoticeText(t.notice?.message ?? '');
-                        setNoticeLevel(t.notice?.level ?? 'info');
+                        setSelectedBannerTenantId(t.tenantId);
+                        setActiveTab('banners');
                       }}
                     >
                       <Megaphone size={13} />{' '}
@@ -824,6 +1188,508 @@ export default function SuperAdminPage() {
         })}
         </TBody>
       </TableWrap>
+        </>
+      )}
+
+      {activeTab === 'banners' && (
+        <div className="space-y-6">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <Label className="text-xs uppercase font-bold text-slate-500 tracking-wider">
+                  Organización a Administrar
+                </Label>
+                <Select
+                  value={bannerTenant?.tenantId ?? ''}
+                  onChange={(e) => setSelectedBannerTenantId(e.target.value)}
+                  className="w-full sm:w-80 font-medium"
+                >
+                  {(tenants ?? []).map((t) => (
+                    <option key={t.tenantId} value={t.tenantId}>
+                      {t.name} {t.appLocked ? '(BLOQUEADA)' : ''}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              {bannerTenant && (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Badge variant={bannerTenant.status === 'ACTIVE' ? 'success' : 'danger'}>
+                    {bannerTenant.status === 'ACTIVE' ? 'ACTIVA' : 'SUSPENDIDA'}
+                  </Badge>
+                  {bannerTenant.notice && bannerTenant.notice.message.trim() !== '' && (
+                    <Badge variant={bannerTenant.notice.level === 'danger' ? 'danger' : bannerTenant.notice.level === 'warning' ? 'warning' : 'sky'}>
+                      Aviso {bannerTenant.notice.level.toUpperCase()} Activo
+                    </Badge>
+                  )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className={bannerTenant.paymentBannerDeactivated ? 'text-slate-600' : 'text-red-600 border-red-200 bg-red-50'}
+                    onClick={() => void togglePaymentBanner(bannerTenant)}
+                  >
+                    <AlertTriangle size={14} />
+                    {bannerTenant.paymentBannerDeactivated ? 'Reactivar cobro insistente' : 'Desactivar cobro insistente'}
+                  </Button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {bannerTenant && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Panel 1: Administración de Aviso / Advertencia */}
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <div className="flex items-center gap-2">
+                    <Megaphone size={18} className="text-emerald-600" />
+                    <h3 className="font-bold text-slate-800">Banner de Aviso / Advertencia</h3>
+                  </div>
+                  {bannerTenant.notice && bannerTenant.notice.message.trim() !== '' && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="text-red-600 hover:bg-red-50"
+                      onClick={() => void handleClearBannerNotice()}
+                    >
+                      <Trash2 size={13} /> Retirar aviso
+                    </Button>
+                  )}
+                </div>
+
+                <form onSubmit={handleSaveBannerNotice} className="space-y-3.5">
+                  <div>
+                    <Label>Título del aviso (opcional)</Label>
+                    <Input
+                      value={bannerTitle}
+                      onChange={(e) => setBannerTitle(e.target.value)}
+                      placeholder="Ej: Mantenimiento programado / Aviso de facturación"
+                    />
+                  </div>
+
+                  <div>
+                    <Label>Mensaje del aviso *</Label>
+                    <textarea
+                      value={bannerMessage}
+                      onChange={(e) => setBannerMessage(e.target.value)}
+                      rows={3}
+                      className="w-full rounded-xl border border-slate-300 p-3 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                      placeholder="Escribe el texto que verá la organización en el banner superior..."
+                      required
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <Label>Nivel de Severidad</Label>
+                      <Select
+                        value={bannerLevel}
+                        onChange={(e) => setBannerLevel(e.target.value as NoticeLevel)}
+                      >
+                        <option value="info">Informativo (Azul)</option>
+                        <option value="warning">Advertencia (Ámbar)</option>
+                        <option value="danger">Urgente / Cobro (Rojo)</option>
+                      </Select>
+                    </div>
+
+                    <div>
+                      <Label>Fecha límite de vigencia (opcional)</Label>
+                      <Input
+                        type="datetime-local"
+                        value={bannerExpiresAt}
+                        onChange={(e) => setBannerExpiresAt(e.target.value)}
+                      />
+                      <p className="mt-1 text-[11px] text-slate-400">
+                        En blanco = Permanente hasta que lo retires.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <label className="flex cursor-pointer items-start gap-3">
+                      <input
+                        type="checkbox"
+                        checked={bannerDismissible}
+                        onChange={(e) => setBannerDismissible(e.target.checked)}
+                        className="mt-0.5 h-4 w-4 rounded text-emerald-600 focus:ring-emerald-500"
+                      />
+                      <div>
+                        <span className="font-semibold text-xs text-slate-800">
+                          Permitir al usuario cerrar el banner con botón (X)
+                        </span>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          {bannerDismissible
+                            ? '✓ El usuario podrá ocultar el banner en su sesión.'
+                            : '🔒 Consistente e inamovible: el usuario NO podrá cerrarlo hasta que expire o lo retires.'}
+                        </p>
+                      </div>
+                    </label>
+                  </div>
+
+                  <Button type="submit" className="w-full">
+                    <Check size={15} /> Guardar y Publicar Aviso
+                  </Button>
+                </form>
+              </div>
+
+              {/* Panel 2: Cobros, WhatsApp y Opciones de Pago */}
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+                <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+                  <AlertTriangle size={18} className="text-red-500" />
+                  <h3 className="font-bold text-slate-800">Cobro y Contacto WhatsApp</h3>
+                </div>
+
+                <div className="space-y-4">
+                  <div>
+                    <Label>Número de WhatsApp para Pagos (esta organización)</Label>
+                    <div className="flex gap-2 mt-1">
+                      <Input
+                        value={paymentPhone}
+                        onChange={(e) => setPaymentPhone(e.target.value)}
+                        placeholder={`Ej: ${CHRIZDEV_WHATSAPP_RAW} (por defecto)`}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          openWhatsApp(
+                            `Prueba de contacto de pago para PresMon (${bannerTenant.name})`,
+                            paymentPhone || CHRIZDEV_WHATSAPP_PHONE,
+                          )
+                        }
+                        title="Abrir WhatsApp con este número"
+                      >
+                        <Phone size={14} /> Probar
+                      </Button>
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-400">
+                      Por defecto: {CHRIZDEV_WHATSAPP_DISPLAY}. Si lo dejas vacío, se usa el número predeterminado.
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <label className="flex cursor-pointer items-start gap-3">
+                      <input
+                        type="checkbox"
+                        checked={paymentDismissible}
+                        onChange={(e) => setPaymentDismissible(e.target.checked)}
+                        className="mt-0.5 h-4 w-4 rounded text-emerald-600 focus:ring-emerald-500"
+                      />
+                      <div>
+                        <span className="font-semibold text-xs text-slate-800">
+                          Permitir botón de cerrar (X) en el banner de cobro
+                        </span>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          {paymentDismissible
+                            ? '✓ El cliente puede ocultar temporalmente el aviso de cobro.'
+                            : '🔒 Consistente e insistente: el banner de cobro NO se puede cerrar hasta que pague o sea desactivado por el Super Admin.'}
+                        </p>
+                      </div>
+                    </label>
+                  </div>
+
+                  {(() => {
+                    const plan = planByTenant.get(bannerTenant.tenantId);
+                    const invoice = plan ? computeMonthlyInvoice(plan) : null;
+                    return (
+                      <div className="rounded-xl border border-slate-200 p-3 text-xs space-y-1.5 bg-gradient-to-br from-slate-50 to-white">
+                        <p className="font-bold text-slate-700">Estado de Facturación Actual:</p>
+                        <div className="flex justify-between">
+                          <span className="text-slate-500">Saldo exigible:</span>
+                          <strong className={invoice && invoice.totalInvoiceAmount > 0 ? 'text-red-600 font-bold' : 'text-emerald-600'}>
+                            {invoice ? formatCOP(invoice.totalInvoiceAmount) : '$0'}
+                          </strong>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-500">Días de mora:</span>
+                          <span className="font-semibold text-slate-700">
+                            {invoice ? `${invoice.maxDaysOverdue} días` : '0 días'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-500">Banner de cobro:</span>
+                          <span className="font-semibold">
+                            {bannerTenant.paymentBannerDeactivated ? (
+                              <span className="text-slate-400">DESACTIVADO</span>
+                            ) : (
+                              <span className="text-red-600 font-bold">ACTIVO</span>
+                            )}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  <Button
+                    type="button"
+                    className="w-full"
+                    onClick={handleSaveBannerNotice}
+                  >
+                    <Check size={15} /> Guardar Parámetros de Cobro
+                  </Button>
+                </div>
+              </div>
+
+              {/* Panel 3: Cuentas Bancarias para Depósito Directo */}
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4 lg:col-span-2">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                  <div className="flex items-center gap-2">
+                    <Landmark size={18} className="text-indigo-600" />
+                    <div>
+                      <h3 className="font-bold text-slate-800">Cuentas Bancarias para Depósito Directo</h3>
+                      <p className="text-xs text-slate-500">
+                        Estas cuentas aparecerán en el banner de la organización para que depositen sin necesidad de preguntar.
+                      </p>
+                    </div>
+                  </div>
+                  <Button size="sm" onClick={openAddBankModal}>
+                    <Plus size={14} /> Añadir Cuenta Bancaria
+                  </Button>
+                </div>
+
+                {(!bannerTenant.bankAccounts || bannerTenant.bankAccounts.length === 0) ? (
+                  <div className="rounded-xl border border-dashed border-slate-300 p-6 text-center">
+                    <Landmark size={32} className="mx-auto text-slate-400 mb-2" />
+                    <p className="text-sm font-semibold text-slate-600">No hay cuentas bancarias personalizadas</p>
+                    <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+                      La organización verá las cuentas oficiales predeterminadas (Nequi y Bancolombia de ChrizDev) a menos que agregues cuentas específicas aquí.
+                    </p>
+                    <Button size="sm" variant="outline" className="mt-4" onClick={openAddBankModal}>
+                      <Plus size={14} /> Configurar primera cuenta
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {bannerTenant.bankAccounts.map((acc) => (
+                      <div
+                        key={acc.id}
+                        className={cn(
+                          'rounded-xl border p-3.5 space-y-2 relative transition-all',
+                          acc.active ? 'border-slate-200 bg-slate-50/70' : 'border-slate-200 bg-slate-100/50 opacity-60',
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <span className="rounded bg-indigo-100 px-2 py-0.5 text-[10px] font-bold text-indigo-800 uppercase">
+                              {acc.accountType}
+                            </span>
+                            <h4 className="font-bold text-slate-900 mt-1 text-sm">{acc.bankName}</h4>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 w-7 p-0"
+                              title="Editar"
+                              onClick={() => openEditBankModal(acc)}
+                            >
+                              <Pencil size={12} />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 w-7 p-0 text-red-600 hover:bg-red-50"
+                              title="Eliminar"
+                              onClick={() => void handleDeleteBankAccount(acc.id)}
+                            >
+                              <Trash2 size={12} />
+                            </Button>
+                          </div>
+                        </div>
+
+                        <div className="space-y-1 text-xs">
+                          <p className="font-mono font-bold text-slate-800 text-sm">{acc.accountNumber}</p>
+                          <p className="text-slate-600">Titular: <span className="font-medium">{acc.holderName}</span></p>
+                          {acc.holderDoc && <p className="text-slate-500 text-[11px]">{acc.holderDoc}</p>}
+                          {acc.notes && <p className="text-slate-500 text-[11px] italic">«{acc.notes}»</p>}
+                        </div>
+
+                        <div className="pt-2 border-t border-slate-200 flex items-center justify-between text-xs">
+                          <span className="text-slate-500">Estado:</span>
+                          <button
+                            type="button"
+                            onClick={() => void handleToggleBankAccount(acc.id)}
+                            className={cn(
+                              'cursor-pointer font-semibold text-xs',
+                              acc.active ? 'text-emerald-700' : 'text-slate-400',
+                            )}
+                          >
+                            {acc.active ? '✓ Activa' : 'Inactiva'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'reports' && (
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-4">
+            <div>
+              <h3 className="font-bold text-slate-800 text-lg">Comprobantes y Capturas de Pago</h3>
+              <p className="text-xs text-slate-500">
+                Revisa y verifica los comprobantes de depósito enviados por las organizaciones antes de aplicar los abonos.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {(['PENDING', 'ALL', 'APPROVED', 'REJECTED'] as const).map((filter) => {
+                const count =
+                  filter === 'ALL'
+                    ? (paymentReports ?? []).length
+                    : (paymentReports ?? []).filter((r) => r.status === filter).length;
+                return (
+                  <button
+                    key={filter}
+                    type="button"
+                    onClick={() => setReportFilter(filter)}
+                    className={cn(
+                      'rounded-lg px-3 py-1.5 text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5',
+                      reportFilter === filter
+                        ? 'bg-emerald-600 text-white shadow-sm'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200',
+                    )}
+                  >
+                    <span>{filter === 'ALL' ? 'Todos' : filter === 'PENDING' ? 'Pendientes' : filter === 'APPROVED' ? 'Aprobados' : 'Rechazados'}</span>
+                    <span className={cn('rounded-full px-1.5 py-0.2 text-[10px]', reportFilter === filter ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700')}>
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {(() => {
+            const filteredReports = (paymentReports ?? []).filter((r) => {
+              if (reportFilter === 'ALL') return true;
+              return r.status === reportFilter;
+            });
+
+            if (filteredReports.length === 0) {
+              return (
+                <div className="rounded-2xl border border-dashed border-slate-300 p-12 text-center bg-white">
+                  <CreditCard size={40} className="mx-auto text-slate-300 mb-2" />
+                  <p className="font-semibold text-slate-600">No hay comprobantes en esta categoría</p>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Los pagos reportados por las organizaciones mediante transferencia o depósito aparecerán aquí para tu verificación.
+                  </p>
+                </div>
+              );
+            }
+
+            return (
+              <TableWrap>
+                <THead>
+                  <TH>Fecha Reporte</TH>
+                  <TH>Organización</TH>
+                  <TH>Monto</TH>
+                  <TH>Referencia / Banco</TH>
+                  <TH>Comprobante</TH>
+                  <TH>Estado</TH>
+                  <TH className="text-right">Acciones</TH>
+                </THead>
+                <TBody>
+                  {filteredReports.map((r) => {
+                    const tenant = (tenants ?? []).find((t) => t.tenantId === r.tenantId);
+                    return (
+                      <TR key={r.reportId}>
+                        <TD className="text-xs text-slate-600 whitespace-nowrap">
+                          {formatDateTime(r.createdAt)}
+                        </TD>
+                        <TD className="font-semibold text-slate-800 text-sm">
+                          {tenant?.name ?? r.tenantId}
+                        </TD>
+                        <TD className="font-mono font-bold text-slate-900 text-sm">
+                          {formatCOP(r.amount)}
+                        </TD>
+                        <TD className="text-xs">
+                          <div className="font-mono font-semibold text-slate-800">{r.referenceNumber || 'S/N'}</div>
+                          <div className="text-slate-500">{r.bankName || 'Depósito'} {r.accountNumber ? `· ${r.accountNumber}` : ''}</div>
+                        </TD>
+                        <TD>
+                          {r.receiptImageBase64 ? (
+                            <button
+                              type="button"
+                              onClick={() => setViewingReceipt(r)}
+                              className="group flex items-center gap-1.5 cursor-pointer rounded-lg border border-slate-200 p-1 hover:border-emerald-500 transition-all bg-white"
+                              title="Ver captura completa"
+                            >
+                              <img
+                                src={r.receiptImageBase64}
+                                alt="Comprobante"
+                                className="h-10 w-10 rounded object-cover"
+                              />
+                              <div className="text-left text-[11px] text-slate-600 group-hover:text-emerald-700">
+                                <span className="flex items-center gap-1 font-semibold"><Eye size={12} /> Ver</span>
+                              </div>
+                            </button>
+                          ) : (
+                            <span className="text-xs text-slate-400 italic">Sin captura</span>
+                          )}
+                        </TD>
+                        <TD>
+                          {r.status === 'PENDING' && (
+                            <Badge variant="warning" className="animate-pulse">
+                              ⏳ PENDIENTE
+                            </Badge>
+                          )}
+                          {r.status === 'APPROVED' && (
+                            <Badge variant="success">
+                              ✓ APROBADO
+                            </Badge>
+                          )}
+                          {r.status === 'REJECTED' && (
+                            <Badge variant="danger" title={r.rejectionReason}>
+                              ✗ RECHAZADO
+                            </Badge>
+                          )}
+                        </TD>
+                        <TD className="text-right">
+                          {r.status === 'PENDING' ? (
+                            <div className="flex items-center justify-end gap-1.5">
+                              <Button
+                                size="sm"
+                                className="bg-emerald-600 hover:bg-emerald-500 text-white"
+                                onClick={() => void handleApproveReport(r)}
+                                title="Aprobar pago y desactivar aviso de cobro"
+                              >
+                                <CheckCircle size={13} /> Aprobar
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="text-red-600 border-red-200 hover:bg-red-50"
+                                onClick={() => {
+                                  setRejectReportTarget(r);
+                                  setRejectReason('');
+                                }}
+                                title="Rechazar pago con motivo"
+                              >
+                                <XCircle size={13} /> Rechazar
+                              </Button>
+                            </div>
+                          ) : (
+                            <span className="text-[11px] text-slate-400">
+                              {r.reviewedAt ? formatDateTime(r.reviewedAt) : 'Revisado'}
+                            </span>
+                          )}
+                        </TD>
+                      </TR>
+                    );
+                  })}
+                </TBody>
+              </TableWrap>
+            );
+          })()}
+        </div>
+      )}
 
       <Dialog open={createOpen} onClose={() => setCreateOpen(false)} title="Nueva organización">
         <form onSubmit={handleCreateTenant} className="space-y-3">
@@ -1180,6 +2046,200 @@ export default function SuperAdminPage() {
             </Button>
           </div>
         </div>
+      </Dialog>
+
+      {/* Modal para Visualizar Comprobante / Captura en Alta Resolución */}
+      <Dialog
+        open={viewingReceipt !== null}
+        onClose={() => setViewingReceipt(null)}
+        title={`Comprobante de Pago · ${(tenants ?? []).find((t) => t.tenantId === viewingReceipt?.tenantId)?.name ?? ''}`}
+      >
+        <div className="space-y-3">
+          {viewingReceipt?.receiptImageBase64 ? (
+            <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-900/5 flex items-center justify-center max-h-[60vh] p-1">
+              <img
+                src={viewingReceipt.receiptImageBase64}
+                alt="Comprobante de pago"
+                className="max-h-[58vh] w-auto object-contain rounded-lg shadow-sm"
+              />
+            </div>
+          ) : (
+            <div className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-slate-400">
+              <ImageIcon size={32} className="mx-auto mb-2 opacity-50" />
+              <p className="text-xs">No se adjuntó captura de pantalla para este reporte.</p>
+            </div>
+          )}
+
+          <div className="rounded-xl bg-slate-50 p-3 text-xs space-y-1.5 border border-slate-200">
+            <div className="flex justify-between">
+              <span className="text-slate-500">Monto Reportado:</span>
+              <strong className="font-mono font-bold text-slate-900 text-sm">
+                {viewingReceipt ? formatCOP(viewingReceipt.amount) : ''}
+              </strong>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-500">Referencia Bancaria:</span>
+              <span className="font-mono font-semibold text-slate-800">{viewingReceipt?.referenceNumber || 'S/N'}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-500">Cuenta Destino:</span>
+              <span className="text-slate-700">{viewingReceipt?.bankName || 'Depósito'} {viewingReceipt?.accountNumber ? `· ${viewingReceipt.accountNumber}` : ''}</span>
+            </div>
+            {viewingReceipt?.notes && (
+              <div className="pt-1 text-slate-600 italic border-t border-slate-200">
+                Notas: {viewingReceipt.notes}
+              </div>
+            )}
+            {viewingReceipt?.rejectionReason && (
+              <div className="rounded bg-red-100 p-2 text-red-800 font-medium">
+                Motivo de rechazo: {viewingReceipt.rejectionReason}
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            {viewingReceipt?.status === 'PENDING' && (
+              <>
+                <Button
+                  variant="outline"
+                  className="text-red-600 border-red-200 hover:bg-red-50"
+                  onClick={() => {
+                    const target = viewingReceipt;
+                    setViewingReceipt(null);
+                    setRejectReportTarget(target);
+                    setRejectReason('');
+                  }}
+                >
+                  <XCircle size={14} /> Rechazar
+                </Button>
+                <Button
+                  className="bg-emerald-600 hover:bg-emerald-500 text-white"
+                  onClick={() => {
+                    const target = viewingReceipt;
+                    setViewingReceipt(null);
+                    void handleApproveReport(target);
+                  }}
+                >
+                  <CheckCircle size={14} /> Aprobar Pago
+                </Button>
+              </>
+            )}
+            <Button variant="secondary" onClick={() => setViewingReceipt(null)}>
+              Cerrar
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* Modal para Rechazar Comprobante con Motivo */}
+      <Dialog
+        open={rejectReportTarget !== null}
+        onClose={() => setRejectReportTarget(null)}
+        title="Rechazar Comprobante de Pago"
+      >
+        <form onSubmit={handleRejectReport} className="space-y-3">
+          <p className="text-xs text-slate-600">
+            Indica el motivo por el cual rechazas este pago. La organización podrá ver esta observación en su panel.
+          </p>
+          <div>
+            <Label>Motivo del rechazo *</Label>
+            <Input
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              placeholder="Ej: El pago no figura en movimientos bancarios / Comprobante alterado"
+              required
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="outline" onClick={() => setRejectReportTarget(null)}>
+              Cancelar
+            </Button>
+            <Button type="submit" variant="destructive">
+              Confirmar Rechazo
+            </Button>
+          </div>
+        </form>
+      </Dialog>
+
+      {/* Modal para Añadir / Editar Cuenta Bancaria */}
+      <Dialog
+        open={bankDialogOpen}
+        onClose={() => setBankDialogOpen(false)}
+        title={editingBankId ? 'Editar Cuenta Bancaria' : 'Añadir Cuenta Bancaria para Depósito'}
+      >
+        <form onSubmit={handleSaveBankAccount} className="space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <Label>Banco / Entidad *</Label>
+              <Input
+                value={bankName}
+                onChange={(e) => setBankName(e.target.value)}
+                placeholder="Ej: Bancolombia / Nequi / Daviplata"
+                required
+              />
+            </div>
+            <div>
+              <Label>Tipo de Cuenta</Label>
+              <Select
+                value={bankAccountType}
+                onChange={(e) => setBankAccountType(e.target.value as BankAccountInfo['accountType'])}
+              >
+                <option value="WALLET">Billetera Digital / Bre-B</option>
+                <option value="SAVINGS">Cuenta de Ahorros</option>
+                <option value="CHECKING">Cuenta Corriente</option>
+                <option value="OTHER">Otro Medio</option>
+              </Select>
+            </div>
+          </div>
+
+          <div>
+            <Label>Número de Cuenta o Celular *</Label>
+            <Input
+              value={bankAccountNumber}
+              onChange={(e) => setBankAccountNumber(e.target.value)}
+              placeholder="Ej: 3183517802 / 123-456789-00"
+              required
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <Label>Nombre del Titular *</Label>
+              <Input
+                value={bankHolderName}
+                onChange={(e) => setBankHolderName(e.target.value)}
+                placeholder="Christian Enao (ChrizDev)"
+                required
+              />
+            </div>
+            <div>
+              <Label>Documento / NIT (opcional)</Label>
+              <Input
+                value={bankHolderDoc}
+                onChange={(e) => setBankHolderDoc(e.target.value)}
+                placeholder="CC 1094958312"
+              />
+            </div>
+          </div>
+
+          <div>
+            <Label>Notas o Llave QR (opcional)</Label>
+            <Input
+              value={bankNotes}
+              onChange={(e) => setBankNotes(e.target.value)}
+              placeholder="Ej: Transferir por Bre-B, enviar soporte tras pagar"
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="outline" onClick={() => setBankDialogOpen(false)}>
+              Cancelar
+            </Button>
+            <Button type="submit">
+              Guardar Cuenta
+            </Button>
+          </div>
+        </form>
       </Dialog>
     </div>
   );

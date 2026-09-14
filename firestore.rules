@@ -57,5 +57,12 @@ service cloud.firestore {
       allow create, update: if hasValidTenantId() && request.resource.data.requestId is string;
       allow delete: if true;
     }
+
+    match /payment_reports/{doc} {
+      allow read: if true;
+      allow create, update: if hasValidTenantId() && request.resource.data.reportId is string;
+      allow delete: if true;
+    }
   }
 }
+

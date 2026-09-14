@@ -12,6 +12,7 @@ const SYNCED_COLLECTIONS = [
   'audit_logs',
   'plans',
   'loan_requests',
+  'payment_reports',
 ] as const;
 
 type SyncedCollection = (typeof SYNCED_COLLECTIONS)[number];
@@ -37,7 +38,10 @@ export function friendlySyncError(err: unknown): string {
 }
 
 function idKeyOf(collection: SyncedCollection): string {
-  return collection === 'audit_logs' ? 'logId' : collection.slice(0, -1) + 'Id';
+  if (collection === 'audit_logs') return 'logId';
+  if (collection === 'loan_requests') return 'requestId';
+  if (collection === 'payment_reports') return 'reportId';
+  return collection.slice(0, -1) + 'Id';
 }
 
 function sanitize(record: Record<string, unknown>): Record<string, unknown> {
