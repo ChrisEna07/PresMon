@@ -17,7 +17,7 @@ import {
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/db';
 import { useAuth } from '../store/auth';
-import { openWhatsApp } from '../lib/share';
+import { openWhatsApp, openWhatsAppDev, CHRIZDEV_WHATSAPP_DISPLAY } from '../lib/share';
 import {
   clearFirebaseConfig,
   loadFirebaseConfig,
@@ -270,12 +270,12 @@ export default function SettingsPage() {
                 size="lg"
                 className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold flex items-center justify-center gap-2 shadow-md shadow-emerald-600/20 cursor-pointer"
                 onClick={() =>
-                  openWhatsApp(
+                  openWhatsAppDev(
                     `Hola ChrizDev, soy ${session?.tenantName ?? 'un administrador'} de PresMon. Necesito solicitar un cambio o ajuste en la configuración de mi organización.`,
                   )
                 }
               >
-                <MessageCircle size={18} /> Contactar al Desarrollador
+                <MessageCircle size={18} /> Contactar al Desarrollador ({CHRIZDEV_WHATSAPP_DISPLAY})
               </Button>
               <Button
                 variant="outline"

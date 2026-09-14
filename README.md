@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 # 💼 PresMon
 ### Sistema Multi-inquilino de Gestión Crediticia, Control de Cartera y Cobranza Offline-First PWA
@@ -245,7 +245,8 @@ firebase deploy --only firestore:rules
 
 Desarrollado y mantenido por **ChrizDev**.
 
-Para soporte técnico, cotizaciones de licencias offline, configuración de planes a medida o solicitud de cambios en organizaciones activas, comunícate directamente a través de los canales oficiales de soporte integrados en la aplicación o vía WhatsApp.
+- **WhatsApp Oficial**: [+57 318 351 7802](https://wa.me/573183517802) (`318 351 7802`)
+- Para soporte técnico, cotizaciones de licencias offline, configuración de planes a medida o solicitud de cambios en organizaciones activas, comunícate directamente a través de WhatsApp o mediante los canales oficiales de soporte integrados en la aplicación.
 
 ---
 <div align="center">

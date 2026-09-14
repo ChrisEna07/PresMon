@@ -280,7 +280,7 @@ export default function LoanDetailPage() {
             if (err instanceof DOMException && err.name === 'AbortError') return;
           }
         }
-        openWhatsApp(text);
+        openWhatsApp(text, borrower?.phone);
         downloadBlob(blob, pdfFileName);
         toast(
           'Se abrió WhatsApp con el mensaje listo. El PDF quedó descargado para adjuntarlo.',

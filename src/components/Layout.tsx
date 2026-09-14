@@ -35,7 +35,7 @@ import {
   runSync,
   setLastSync,
 } from '../lib/sync/syncEngine';
-import { openWhatsApp } from '../lib/share';
+import { openWhatsApp, openWhatsAppDev, CHRIZDEV_WHATSAPP_DISPLAY } from '../lib/share';
 import { computeMonthlyInvoice } from '../lib/billingEngine';
 import { checkOfflineTelemetry, reportPurgeConfirmation } from '../lib/offlineTelemetry';
 import { cn, formatCOP, formatDateShort, todayStr } from '../lib/format';
@@ -445,13 +445,13 @@ export default function Layout() {
               )}
               <button
                 onClick={() =>
-                  openWhatsApp(
+                  openWhatsAppDev(
                     `Hola ChrizDev, soy ${session?.tenantName ?? 'un cliente'} de PresMon. Mi servicio está suspendido por factura pendiente de ${formatCOP(monthlyInvoice.totalInvoiceAmount)} (${monthlyInvoice.maxDaysOverdue} días de mora). Quiero ponerme al día o solicitar desbloqueo.`,
                   )
                 }
-                className="mt-5 w-full cursor-pointer rounded-xl bg-emerald-600 px-4 py-3 font-bold text-white transition-colors hover:bg-emerald-500"
+                className="mt-5 w-full cursor-pointer rounded-xl bg-emerald-600 px-4 py-3 font-bold text-white transition-colors hover:bg-emerald-500 flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/30"
               >
-                Contactar para pagar y reactivar
+                <MessageCircle size={18} /> Contactar para pagar y reactivar ({CHRIZDEV_WHATSAPP_DISPLAY})
               </button>
               <button
                 onClick={() => {
@@ -518,13 +518,13 @@ export default function Layout() {
                 <div className="w-full md:w-auto shrink-0 flex flex-col sm:flex-row md:flex-col gap-2">
                   <button
                     onClick={() =>
-                      openWhatsApp(
+                      openWhatsAppDev(
                         `Hola ChrizDev, soy ${session?.tenantName ?? 'un cliente'} de PresMon. Deseo realizar el pago de mi factura pendiente de ${formatCOP(monthlyInvoice.totalInvoiceAmount)} (${monthlyInvoice.maxDaysOverdue} días de mora) para que desactiven el aviso de cobro.`,
                       )
                     }
                     className="w-full cursor-pointer rounded-xl bg-emerald-600 hover:bg-emerald-500 px-4 py-3 text-center text-sm font-bold text-white shadow-md shadow-emerald-600/20 transition-all flex items-center justify-center gap-2"
                   >
-                    <MessageCircle size={16} /> Pagar / Reportar pago
+                    <MessageCircle size={16} /> Pagar / Reportar pago ({CHRIZDEV_WHATSAPP_DISPLAY})
                   </button>
                 </div>
               </div>
