@@ -52,6 +52,11 @@ export const ACTION_LABELS: Record<AuditAction, string> = {
   DATA_EXPORTED: 'Respaldo exportado',
   SYNC_COMPLETED: 'Sincronización completada',
   SYNC_CONFLICT: 'Conflicto resuelto por sincronización',
+  OFFLINE_WIPE_CONFIRMED: 'Purga offline ejecutada y confirmada',
+  OFFLINE_ONLINE_DETECTED: 'Edición offline detectada con internet',
+  PAYMENT_REPORT_CREATED: 'Comprobante de pago reportado',
+  PAYMENT_REPORT_APPROVED: 'Comprobante de pago aprobado',
+  PAYMENT_REPORT_REJECTED: 'Comprobante de pago rechazado',
 };
 
 export const AUDIT_FILTERS: Array<{ key: string; label: string; actions: AuditAction[] }> = [

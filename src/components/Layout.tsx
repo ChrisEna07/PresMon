@@ -236,7 +236,7 @@ export default function Layout() {
         status: 'PENDING',
         createdAt: now,
         updatedAt: now,
-        syncStatus: 'NEW',
+        syncStatus: 'PENDING',
       };
 
       await db.payment_reports.put(newReport);
@@ -256,7 +256,7 @@ export default function Layout() {
         }),
         createdAt: now,
         updatedAt: now,
-        syncStatus: 'NEW',
+        syncStatus: 'PENDING',
       });
 
       toast('Comprobante enviado exitosamente para verificación.', 'success');

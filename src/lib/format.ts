@@ -93,3 +93,7 @@ export function formatDateTime(isoDateTime: string): string {
     timeStyle: 'short',
   }).format(d);
 }
+
+export function nowISO(): string {
+  return new Date().toISOString();
+}

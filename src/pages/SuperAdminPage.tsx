@@ -1217,7 +1217,7 @@ export default function SuperAdminPage() {
                     {bannerTenant.status === 'ACTIVE' ? 'ACTIVA' : 'SUSPENDIDA'}
                   </Badge>
                   {bannerTenant.notice && bannerTenant.notice.message.trim() !== '' && (
-                    <Badge variant={bannerTenant.notice.level === 'danger' ? 'danger' : bannerTenant.notice.level === 'warning' ? 'warning' : 'sky'}>
+                    <Badge variant={bannerTenant.notice.level === 'danger' ? 'danger' : bannerTenant.notice.level === 'warning' ? 'warning' : 'info'}>
                       Aviso {bannerTenant.notice.level.toUpperCase()} Activo
                     </Badge>
                   )}
