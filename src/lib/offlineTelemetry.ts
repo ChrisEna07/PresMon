@@ -1,6 +1,7 @@
 import { loadFirebaseConfig } from './sync/firebaseConfig';
 import { isOfflineEdition } from './offlineEdition';
 import { db, wipeLocalTenantData } from '../db/db';
+import type { Tenant } from '../db/models';
 import { nowISO } from './format';
 import { uid } from './id';
 
@@ -21,7 +22,7 @@ export async function reportOnlineHeartbeat(tenantId: string): Promise<void> {
   const device = typeof navigator !== 'undefined' ? navigator.userAgent : 'Desconocido';
   const isOffline = isOfflineEdition();
 
-  const payload: Record<string, unknown> = {
+  const payload: Partial<Tenant> = {
     lastSeenOnlineAt: now,
     lastSeenDevice: device,
   };
