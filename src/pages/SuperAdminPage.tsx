@@ -144,9 +144,26 @@ export default function SuperAdminPage() {
     searchParams.get('tenantId') || '',
   );
 
-  // Menú desplegable de acciones por fila y modal de reglas Firestore
-  const [openActionTenantId, setOpenActionTenantId] = useState<string | null>(null);
+  // Menú desplegable de acciones flotante (posicionado de forma fija para evitar recorte por overflow)
+  interface ActionMenuState {
+    tenant: Tenant;
+    top: number;
+    right: number;
+  }
+  const [actionMenu, setActionMenu] = useState<ActionMenuState | null>(null);
   const [rulesModalOpen, setRulesModalOpen] = useState(false);
+
+  useEffect(() => {
+    function handleClose() {
+      if (actionMenu) setActionMenu(null);
+    }
+    window.addEventListener('scroll', handleClose, true);
+    window.addEventListener('resize', handleClose);
+    return () => {
+      window.removeEventListener('scroll', handleClose, true);
+      window.removeEventListener('resize', handleClose);
+    };
+  }, [actionMenu]);
 
   function getTenantOnlineInfo(t: Tenant): {
     badgeVariant: 'success' | 'warning' | 'muted' | 'danger' | 'info';
@@ -1189,179 +1206,209 @@ export default function SuperAdminPage() {
                   </div>
                 </TD>
                 <TD className="text-right">
-                  <div className="relative inline-block text-left">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="gap-1.5 font-medium shadow-xs hover:bg-slate-100 cursor-pointer"
-                      onClick={() => setOpenActionTenantId(openActionTenantId === t.tenantId ? null : t.tenantId)}
-                    >
-                      <span>Acciones</span>
-                      <ChevronDown
-                        size={14}
-                        className={cn(
-                          'transition-transform duration-200 text-slate-500',
-                          openActionTenantId === t.tenantId && 'rotate-180',
-                        )}
-                      />
-                    </Button>
-
-                    {openActionTenantId === t.tenantId && (
-                      <>
-                        <div
-                          className="fixed inset-0 z-40"
-                          onClick={() => setOpenActionTenantId(null)}
-                        />
-                        <div className="absolute right-0 mt-1.5 w-60 origin-top-right rounded-xl border border-slate-200 bg-white py-1.5 shadow-xl ring-1 ring-black/5 z-50 text-xs divide-y divide-slate-100 text-slate-700">
-                          {/* Grupo 1: Acceso y Pagos */}
-                          <div className="py-1">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setOpenActionTenantId(null);
-                                void setAppLock(t, !(t.appLocked || (hasMora5Days && !t.unlockedByAdmin)));
-                              }}
-                              className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-slate-50 transition-colors text-left font-medium cursor-pointer"
-                            >
-                              {t.appLocked || (hasMora5Days && !t.unlockedByAdmin) ? (
-                                <>
-                                  <LockOpen size={14} className="text-emerald-600 shrink-0" />
-                                  <span className="text-emerald-700">Desbloquear app</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Lock size={14} className="text-red-500 shrink-0" />
-                                  <span className="text-red-600">Bloquear app por falta de pago</span>
-                                </>
-                              )}
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setOpenActionTenantId(null);
-                                setSelectedBannerTenantId(t.tenantId);
-                                setActiveTab('banners');
-                              }}
-                              className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-slate-50 transition-colors text-left cursor-pointer"
-                            >
-                              <Megaphone size={14} className="text-sky-600 shrink-0" />
-                              <span>Administrar avisos y banners</span>
-                            </button>
-
-                            {invoice && invoice.totalInvoiceAmount > 0 && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setOpenActionTenantId(null);
-                                  void togglePaymentBanner(t);
-                                }}
-                                className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-slate-50 transition-colors text-left cursor-pointer"
-                              >
-                                <AlertTriangle
-                                  size={14}
-                                  className={cn('shrink-0', t.paymentBannerDeactivated ? 'text-slate-400' : 'text-amber-600')}
-                                />
-                                <span>{t.paymentBannerDeactivated ? 'Activar banner cobro' : 'Desactivar banner cobro'}</span>
-                              </button>
-                            )}
-                          </div>
-
-                          {/* Grupo 2: Seguridad y Purga Offline */}
-                          <div className="py-1">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setOpenActionTenantId(null);
-                                setWipeTarget(t);
-                                setWipeLockOrg(false);
-                              }}
-                              className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-amber-50/80 transition-colors text-left text-amber-800 font-medium cursor-pointer"
-                            >
-                              <DatabaseZap size={14} className="text-amber-600 shrink-0" />
-                              <span>Purgar base local y revocar offline</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setOpenActionTenantId(null);
-                                setOfflineTargetId(t.tenantId);
-                                setOfflinePaid(false);
-                              }}
-                              className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-slate-50 transition-colors text-left cursor-pointer"
-                            >
-                              <HardDriveDownload size={14} className="text-indigo-600 shrink-0" />
-                              <span>{t.offlineLicense ? 'Ver enlace Edición Offline' : 'Emitir Edición Offline'}</span>
-                            </button>
-                          </div>
-
-                          {/* Grupo 3: Edición y Credenciales */}
-                          <div className="py-1">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setOpenActionTenantId(null);
-                                setEditTarget(t);
-                                setEditName(t.name);
-                              }}
-                              className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-slate-50 transition-colors text-left cursor-pointer"
-                            >
-                              <Pencil size={14} className="text-slate-500 shrink-0" />
-                              <span>Editar nombre</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setOpenActionTenantId(null);
-                                setResetTarget(t);
-                              }}
-                              className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-slate-50 transition-colors text-left cursor-pointer"
-                            >
-                              <KeyRound size={14} className="text-slate-500 shrink-0" />
-                              <span>Restablecer contraseña admin</span>
-                            </button>
-
-                            {t.clientPortalEnabled && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setOpenActionTenantId(null);
-                                  setPortalLinkTarget(t);
-                                }}
-                                className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-slate-50 transition-colors text-left cursor-pointer"
-                              >
-                                <Link2 size={14} className="text-sky-600 shrink-0" />
-                                <span>Enlace para clientes</span>
-                              </button>
-                            )}
-                          </div>
-
-                          {/* Grupo 4: Zona de Peligro */}
-                          <div className="py-1">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setOpenActionTenantId(null);
-                                void openDeleteDialog(t);
-                              }}
-                              className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-red-50 transition-colors text-left text-red-600 font-medium cursor-pointer"
-                            >
-                              <Trash2 size={14} className="text-red-600 shrink-0" />
-                              <span>Eliminar organización</span>
-                            </button>
-                          </div>
-                        </div>
-                      </>
-                    )}
-                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 font-medium shadow-xs hover:bg-slate-100 cursor-pointer"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (actionMenu?.tenant.tenantId === t.tenantId) {
+                        setActionMenu(null);
+                      } else {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setActionMenu({
+                          tenant: t,
+                          top: rect.bottom + 4,
+                          right: Math.max(12, window.innerWidth - rect.right),
+                        });
+                      }
+                    }}
+                  >
+                    <span>Acciones</span>
+                    <ChevronDown
+                      size={14}
+                      className={cn(
+                        'transition-transform duration-200 text-slate-500',
+                        actionMenu?.tenant.tenantId === t.tenantId && 'rotate-180',
+                      )}
+                    />
+                  </Button>
                 </TD>
               </TR>
             );
           })}
         </TBody>
       </TableWrap>
+
+      {/* Menú flotante desplegable de acciones (renderizado fuera de TableWrap con position: fixed para evitar recorte por overflow) */}
+      {actionMenu && (() => {
+        const t = actionMenu.tenant;
+        const plan = planByTenant.get(t.tenantId);
+        const invoice = plan ? computeMonthlyInvoice(plan) : null;
+        const hasMora5Days = invoice?.isOverdueMoreThan5Days ?? false;
+
+        return (
+          <>
+            <div
+              className="fixed inset-0 z-50 bg-black/10 backdrop-blur-2xs"
+              onClick={() => setActionMenu(null)}
+            />
+            <div
+              className="fixed z-50 w-64 rounded-xl border border-slate-200 bg-white py-1.5 shadow-2xl ring-1 ring-black/5 text-xs divide-y divide-slate-100 text-slate-700 animate-in fade-in zoom-in-95 duration-100"
+              style={{
+                top: Math.min(actionMenu.top, window.innerHeight - 380),
+                right: actionMenu.right,
+              }}
+            >
+              {/* Encabezado con el nombre de la organización */}
+              <div className="px-3.5 py-2 bg-slate-50 border-b border-slate-100">
+                <p className="font-bold text-slate-900 truncate">{t.name}</p>
+                <p className="text-[10px] text-slate-500 truncate">Admin: {adminByTenant.get(t.tenantId) ?? '—'}</p>
+              </div>
+
+              {/* Grupo 1: Acceso y Pagos */}
+              <div className="py-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionMenu(null);
+                    void setAppLock(t, !(t.appLocked || (hasMora5Days && !t.unlockedByAdmin)));
+                  }}
+                  className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-slate-50 transition-colors text-left font-medium cursor-pointer"
+                >
+                  {t.appLocked || (hasMora5Days && !t.unlockedByAdmin) ? (
+                    <>
+                      <LockOpen size={14} className="text-emerald-600 shrink-0" />
+                      <span className="text-emerald-700">Desbloquear app</span>
+                    </>
+                  ) : (
+                    <>
+                      <Lock size={14} className="text-red-500 shrink-0" />
+                      <span className="text-red-600">Bloquear app por mora</span>
+                    </>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionMenu(null);
+                    setSelectedBannerTenantId(t.tenantId);
+                    setActiveTab('banners');
+                  }}
+                  className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-slate-50 transition-colors text-left cursor-pointer"
+                >
+                  <Megaphone size={14} className="text-sky-600 shrink-0" />
+                  <span>Administrar avisos y banners</span>
+                </button>
+
+                {invoice && invoice.totalInvoiceAmount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActionMenu(null);
+                      void togglePaymentBanner(t);
+                    }}
+                    className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-slate-50 transition-colors text-left cursor-pointer"
+                  >
+                    <AlertTriangle
+                      size={14}
+                      className={cn('shrink-0', t.paymentBannerDeactivated ? 'text-slate-400' : 'text-amber-600')}
+                    />
+                    <span>{t.paymentBannerDeactivated ? 'Activar banner cobro' : 'Desactivar banner cobro'}</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Grupo 2: Seguridad y Purga Offline */}
+              <div className="py-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionMenu(null);
+                    setWipeTarget(t);
+                    setWipeLockOrg(false);
+                  }}
+                  className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-amber-50/80 transition-colors text-left text-amber-800 font-medium cursor-pointer"
+                >
+                  <DatabaseZap size={14} className="text-amber-600 shrink-0" />
+                  <span>Purgar base local y revocar offline</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionMenu(null);
+                    setOfflineTargetId(t.tenantId);
+                    setOfflinePaid(false);
+                  }}
+                  className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-slate-50 transition-colors text-left cursor-pointer"
+                >
+                  <HardDriveDownload size={14} className="text-indigo-600 shrink-0" />
+                  <span>{t.offlineLicense ? 'Ver enlace Edición Offline' : 'Emitir Edición Offline'}</span>
+                </button>
+              </div>
+
+              {/* Grupo 3: Edición y Credenciales */}
+              <div className="py-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionMenu(null);
+                    setEditTarget(t);
+                    setEditName(t.name);
+                  }}
+                  className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-slate-50 transition-colors text-left cursor-pointer"
+                >
+                  <Pencil size={14} className="text-slate-500 shrink-0" />
+                  <span>Editar nombre</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionMenu(null);
+                    setResetTarget(t);
+                  }}
+                  className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-slate-50 transition-colors text-left cursor-pointer"
+                >
+                  <KeyRound size={14} className="text-slate-500 shrink-0" />
+                  <span>Restablecer contraseña admin</span>
+                </button>
+
+                {t.clientPortalEnabled && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActionMenu(null);
+                      setPortalLinkTarget(t);
+                    }}
+                    className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-slate-50 transition-colors text-left cursor-pointer"
+                  >
+                    <Link2 size={14} className="text-sky-600 shrink-0" />
+                    <span>Enlace para clientes</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Grupo 4: Zona de Peligro */}
+              <div className="py-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionMenu(null);
+                    void openDeleteDialog(t);
+                  }}
+                  className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-red-50 transition-colors text-left text-red-600 font-medium cursor-pointer"
+                >
+                  <Trash2 size={14} className="text-red-600 shrink-0" />
+                  <span>Eliminar organización</span>
+                </button>
+              </div>
+            </div>
+          </>
+        );
+      })()}
         </>
       )}
 
