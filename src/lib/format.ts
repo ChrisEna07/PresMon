@@ -52,17 +52,22 @@ export function diffDays(fromISO: string, toISO: string): number {
 
 /**
  * Próximo vencimiento de un cobro mensual que cae el día `day` (1-28).
- * Salta los meses ya cubiertos por `paidThrough` (YYYY-MM-DD) y el pasado.
+ * Si `paidThrough` (YYYY-MM-DD) está definido, el próximo vencimiento exigible
+ * es el ciclo mensual inmediatamente posterior a dicha fecha.
+ * Si nunca ha pagado (`paidThrough` vacío), se evalúa el vencimiento del mes en curso.
  */
 export function nextMonthlyDue(day: number, paidThrough?: string): string {
   const safeDay = Math.min(28, Math.max(1, Math.round(day) || 1));
+  const dayStr = String(safeDay).padStart(2, '0');
   const today = todayStr();
-  let candidate = `${today.slice(0, 8)}${String(safeDay).padStart(2, '0')}`;
-  for (let i = 0; i < 24; i++) {
-    if (candidate >= today && (!paidThrough || candidate > paidThrough)) return candidate;
-    candidate = addMonthsStr(candidate, 1);
+
+  if (paidThrough && paidThrough.length >= 10) {
+    const baseDate = `${paidThrough.slice(0, 8)}${dayStr}`;
+    const nextDate = addMonthsStr(baseDate, 1);
+    return `${nextDate.slice(0, 8)}${dayStr}`;
   }
-  return candidate;
+
+  return `${today.slice(0, 8)}${dayStr}`;
 }
 
 export function formatDateShort(iso: string): string {

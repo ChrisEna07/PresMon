@@ -1,6 +1,7 @@
 import { useMemo, useState, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
+  AlertTriangle,
   Building2,
   Copy,
   DatabaseZap,
@@ -68,6 +69,7 @@ export default function SuperAdminPage() {
 
   const [wipeTarget, setWipeTarget] = useState<Tenant | null>(null);
   const [wiping, setWiping] = useState(false);
+  const [wipeLockOrg, setWipeLockOrg] = useState(false);
 
   const stats = useMemo(
     () => ({
@@ -351,9 +353,11 @@ export default function SuperAdminPage() {
       const updated: Tenant = {
         ...wipeTarget,
         wipeLocalData: true,
+        wipeConfirmedAt: undefined, // Reinicia confirmación para la nueva orden
+        wipeConfirmedDevice: undefined,
         offlineBlocked: true,
-        appLocked: true,
-        unlockedByAdmin: false,
+        appLocked: wipeLockOrg ? true : (wipeTarget.appLocked ?? false),
+        unlockedByAdmin: wipeLockOrg ? false : (wipeTarget.unlockedByAdmin ?? false),
         updatedAt: new Date().toISOString(),
         syncStatus: 'PENDING',
       };
@@ -368,11 +372,14 @@ export default function SuperAdminPage() {
         payloadSnapshot: {
           accion: 'BORRADO_DATOS_LOCALES_Y_REVOCACION_OFFLINE',
           nombre: wipeTarget.name,
+          bloqueoOrgAplicado: wipeLockOrg,
         },
       });
       pushToCloud();
       toast(
-        `Datos locales de «${wipeTarget.name}» purgados en este equipo. Se emitió la orden remota para purgar sus dispositivos y bloquear el modo offline.`,
+        wipeLockOrg
+          ? `Datos locales de «${wipeTarget.name}» purgados en este equipo. Se emitió orden remota de purga y se bloqueó el acceso a la organización.`
+          : `Datos locales de «${wipeTarget.name}» purgados en este equipo. Se emitió orden remota de purga offline sin bloquear el acceso online de la organización.`,
         'success',
       );
       setWipeTarget(null);
@@ -381,6 +388,24 @@ export default function SuperAdminPage() {
     } finally {
       setWiping(false);
     }
+  }
+
+  async function togglePaymentBanner(t: Tenant) {
+    if (!session) return;
+    const nextState = !t.paymentBannerDeactivated;
+    await saveTenant({
+      ...t,
+      paymentBannerDeactivated: nextState,
+      updatedAt: new Date().toISOString(),
+      syncStatus: 'PENDING',
+    });
+    pushToCloud();
+    toast(
+      nextState
+        ? `Banner insistente de cobro DESACTIVADO para «${t.name}».`
+        : `Banner insistente de cobro ACTIVADO para «${t.name}».`,
+      'info',
+    );
   }
 
   async function sendNotice(e: FormEvent) {
@@ -596,6 +621,28 @@ export default function SuperAdminPage() {
                       {t.offlineBlocked && (
                         <Badge variant="danger">OFFLINE REVOCADO</Badge>
                       )}
+                      {t.wipeConfirmedAt && (
+                        <Badge variant="success" title={`Confirmado por: ${t.wipeConfirmedDevice ?? 'cliente'}`}>
+                          ✓ PURGA CONFIRMADA ({formatDateTime(t.wipeConfirmedAt)})
+                        </Badge>
+                      )}
+                      {t.wipeLocalData && !t.wipeConfirmedAt && (
+                        <Badge variant="warning" className="animate-pulse">
+                          ⏳ PURGA PENDIENTE DE CLIENTE
+                        </Badge>
+                      )}
+                      {t.offlineLicense && t.offlineOnlineDetected && t.offlineOnlineDetectedAt && (
+                        <Badge variant="warning" title={`Dispositivo: ${t.offlineDeviceInfo ?? ''}`}>
+                          🟢 OFFLINE ONLINE ({formatDateTime(t.offlineOnlineDetectedAt)})
+                        </Badge>
+                      )}
+                      {invoice && invoice.totalInvoiceAmount > 0 && (
+                        t.paymentBannerDeactivated ? (
+                          <Badge variant="muted">Banner cobro inactivo</Badge>
+                        ) : (
+                          <Badge variant="danger">Banner cobro activo</Badge>
+                        )
+                      )}
                       {!t.appLocked && t.notice && t.notice.message.trim() !== '' && (
                         <Megaphone size={12} className="inline text-sky-500" />
                       )}
@@ -700,12 +747,33 @@ export default function SuperAdminPage() {
                       <Megaphone size={13} />{' '}
                       <span className="hidden xl:inline">Aviso</span>
                     </Button>
+                    {invoice && invoice.totalInvoiceAmount > 0 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        title={
+                          t.paymentBannerDeactivated
+                            ? 'Reactivar banner insistente de cobro en el panel de la organización'
+                            : 'Desactivar banner insistente de cobro en el panel de la organización'
+                        }
+                        className={t.paymentBannerDeactivated ? 'text-slate-400' : 'text-red-600 hover:bg-red-50'}
+                        onClick={() => void togglePaymentBanner(t)}
+                      >
+                        <AlertTriangle size={13} />{' '}
+                        <span className="hidden xl:inline">
+                          {t.paymentBannerDeactivated ? 'Activar cobro' : 'Quitar cobro'}
+                        </span>
+                      </Button>
+                    )}
                     <Button
                       variant="ghost"
                       size="sm"
                       title="Borrar datos locales de este equipo y revocar modo offline"
                       className="text-amber-600 hover:bg-amber-50"
-                      onClick={() => setWipeTarget(t)}
+                      onClick={() => {
+                        setWipeTarget(t);
+                        setWipeLockOrg(false);
+                      }}
                     >
                       <DatabaseZap size={13} />{' '}
                       <span className="hidden xl:inline">Purgar local</span>
@@ -1066,6 +1134,35 @@ export default function SuperAdminPage() {
               </li>
             </ul>
           </div>
+          {wipeTarget?.wipeConfirmedAt && (
+            <div className="rounded-lg bg-emerald-50 p-2.5 text-xs text-emerald-800 border border-emerald-200">
+              <p className="font-semibold">✓ Última purga confirmada por dispositivo cliente:</p>
+              <p className="mt-0.5 font-mono">{formatDateTime(wipeTarget.wipeConfirmedAt)}</p>
+              {wipeTarget.wipeConfirmedDevice && (
+                <p className="text-[10px] text-emerald-600 truncate mt-0.5">
+                  Dispositivo: {wipeTarget.wipeConfirmedDevice}
+                </p>
+              )}
+            </div>
+          )}
+
+          <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-slate-200 p-2.5 text-xs text-slate-700 hover:bg-slate-50">
+            <input
+              type="checkbox"
+              checked={wipeLockOrg}
+              onChange={(e) => setWipeLockOrg(e.target.checked)}
+              className="mt-0.5 h-4 w-4"
+            />
+            <div>
+              <span className="font-semibold text-slate-800">
+                Bloquear también el acceso web/online de la organización
+              </span>
+              <p className="text-[11px] text-slate-500">
+                Desmarcado por defecto: la purga offline se ejecuta sin suspender la organización en la web. Márcalo solo si deseas bloquear totalmente la cuenta.
+              </p>
+            </div>
+          </label>
+
           <p className="text-xs text-slate-500">
             Usa esta función si el cliente no ha pagado su licencia o para impedir que continúe
             operando la app de forma clandestina o desconectada.
@@ -1079,7 +1176,7 @@ export default function SuperAdminPage() {
               disabled={wiping}
               onClick={() => void handleWipeTenantLocalData()}
             >
-              <DatabaseZap size={14} /> {wiping ? 'Purgando datos…' : 'Confirmar purga y revocar offline'}
+              <DatabaseZap size={14} /> {wiping ? 'Purgando datos…' : wipeLockOrg ? 'Confirmar purga y bloquear cuenta' : 'Confirmar purga offline'}
             </Button>
           </div>
         </div>

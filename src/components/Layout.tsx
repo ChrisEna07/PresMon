@@ -13,6 +13,7 @@ import {
   Lock,
   LogOut,
   Megaphone,
+  MessageCircle,
   ScrollText,
   Settings,
   ShieldCheck,
@@ -36,6 +37,7 @@ import {
 } from '../lib/sync/syncEngine';
 import { openWhatsApp } from '../lib/share';
 import { computeMonthlyInvoice } from '../lib/billingEngine';
+import { checkOfflineTelemetry, reportPurgeConfirmation } from '../lib/offlineTelemetry';
 import { cn, formatCOP, formatDateShort, todayStr } from '../lib/format';
 import { useToast } from './ui/toast';
 
@@ -90,6 +92,11 @@ export default function Layout() {
     (monthlyInvoice.maxDaysOverdue > 0 ||
       bannerDismissedFor !== `${currentPlan?.planId}:${monthlyInvoice.totalInvoiceAmount}`);
 
+  const showInsistentPaymentBanner =
+    session?.role === 'TENANT_ADMIN' &&
+    monthlyInvoice.totalInvoiceAmount > 0 &&
+    tenantRecord?.paymentBannerDeactivated !== true;
+
   const activeNotice = tenantRecord?.notice;
   const showNotice =
     session?.role === 'TENANT_ADMIN' &&
@@ -117,6 +124,7 @@ export default function Layout() {
 
     // Orden remota de borrado local emitida por Super Admin
     if (remote.data.wipeLocalData === true) {
+      await reportPurgeConfirmation(session.tenantId);
       await wipeLocalTenantData(session.tenantId);
       logout();
       toast(
@@ -130,12 +138,14 @@ export default function Layout() {
     const nextLocked = remote.data.appLocked === true;
     const nextUnlocked = remote.data.unlockedByAdmin === true;
     const nextOfflineBlocked = remote.data.offlineBlocked === true;
+    const nextBannerDeactivated = remote.data.paymentBannerDeactivated === true;
     const nextNotice = (remote.data.notice ?? undefined) as Tenant['notice'];
     if (!local) return;
     const changed =
       local.appLocked !== nextLocked ||
       local.unlockedByAdmin !== nextUnlocked ||
       local.offlineBlocked !== nextOfflineBlocked ||
+      local.paymentBannerDeactivated !== nextBannerDeactivated ||
       JSON.stringify(local.notice ?? null) !== JSON.stringify(nextNotice ?? null);
     if (!changed) return;
     await db.tenants.put({
@@ -143,11 +153,24 @@ export default function Layout() {
       appLocked: nextLocked,
       unlockedByAdmin: nextUnlocked,
       offlineBlocked: nextOfflineBlocked,
+      paymentBannerDeactivated: nextBannerDeactivated,
       notice: nextNotice,
       updatedAt: String(remote.data.updatedAt ?? local.updatedAt),
       syncStatus: 'SYNCED',
     });
   }
+
+  // Telemetría para edición offline y confirmación de purga si detecta red
+  useEffect(() => {
+    if (!online || !session?.tenantId) return;
+    void checkOfflineTelemetry(session.tenantId).then((res) => {
+      if (res.wiped) {
+        logout();
+        toast('Los datos locales fueron purgados por el Super Administrador.', 'error');
+        navigate('/login', { replace: true });
+      }
+    });
+  }, [online, session?.tenantId]);
 
   useEffect(() => {
     if (!online) return;
@@ -444,6 +467,69 @@ export default function Layout() {
         )}
 
         <main className="mx-auto max-w-6xl p-4 pb-24 lg:pb-8">
+          {showInsistentPaymentBanner && (
+            <div className="mb-6 overflow-hidden rounded-2xl border-2 border-red-500 bg-gradient-to-br from-red-50 via-white to-amber-50 p-5 md:p-6 shadow-xl ring-4 ring-red-500/10">
+              <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                <div className="flex items-start gap-3.5">
+                  <div className="mt-0.5 flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-red-600 text-white shadow-md shadow-red-600/30">
+                    <AlertTriangle size={24} />
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="rounded-md bg-red-600 px-2.5 py-0.5 text-xs font-bold text-white uppercase tracking-wide">
+                        {monthlyInvoice.maxDaysOverdue > 0
+                          ? `Mora de ${monthlyInvoice.maxDaysOverdue} días`
+                          : 'Factura exigible'}
+                      </span>
+                      <h3 className="text-base md:text-lg font-extrabold text-slate-900">
+                        Aviso Obligatorio de Pago de Servicio
+                      </h3>
+                    </div>
+                    <p className="text-sm font-medium text-slate-700">
+                      Tu organización registra un saldo pendiente de{' '}
+                      <strong className="text-red-600 text-base">{formatCOP(monthlyInvoice.totalInvoiceAmount)}</strong>
+                      {monthlyInvoice.maxDaysOverdue > 0 && (
+                        <span> con <strong>{monthlyInvoice.maxDaysOverdue} días de mora acumulados</strong></span>
+                      )}.
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 pt-0.5">
+                      <span className="rounded bg-slate-100 px-2 py-0.5 font-semibold">
+                        Detalle: {monthlyInvoice.summaryText}
+                      </span>
+                      {monthlyInvoice.cloudIncluded && (
+                        <span className="rounded bg-sky-100 px-2 py-0.5 text-sky-800 font-semibold">
+                          Servicio Cloud: {formatCOP(monthlyInvoice.cloudFee)}/mes
+                        </span>
+                      )}
+                      {monthlyInvoice.installmentsAmount > 0 && (
+                        <span className="rounded bg-indigo-100 px-2 py-0.5 text-indigo-800 font-semibold">
+                          Cuotas app: {formatCOP(monthlyInvoice.installmentsAmount)}
+                        </span>
+                      )}
+                    </div>
+                    <p className="pt-2 text-xs font-bold text-red-700 leading-relaxed">
+                      ⚠️ Advertencia: El no pago oportuno será causal de desactivación definitiva de la cuenta.
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      * Este aviso es permanente e insistente. Únicamente puede ser desactivado por el Super Administrador tras verificar tu pago.
+                    </p>
+                  </div>
+                </div>
+                <div className="w-full md:w-auto shrink-0 flex flex-col sm:flex-row md:flex-col gap-2">
+                  <button
+                    onClick={() =>
+                      openWhatsApp(
+                        `Hola ChrizDev, soy ${session?.tenantName ?? 'un cliente'} de PresMon. Deseo realizar el pago de mi factura pendiente de ${formatCOP(monthlyInvoice.totalInvoiceAmount)} (${monthlyInvoice.maxDaysOverdue} días de mora) para que desactiven el aviso de cobro.`,
+                      )
+                    }
+                    className="w-full cursor-pointer rounded-xl bg-emerald-600 hover:bg-emerald-500 px-4 py-3 text-center text-sm font-bold text-white shadow-md shadow-emerald-600/20 transition-all flex items-center justify-center gap-2"
+                  >
+                    <MessageCircle size={16} /> Pagar / Reportar pago
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           <Outlet />
         </main>
       </div>

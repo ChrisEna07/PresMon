@@ -27,7 +27,9 @@ export type AuditAction =
   | 'PLAN_UPDATED'
   | 'DATA_EXPORTED'
   | 'SYNC_COMPLETED'
-  | 'SYNC_CONFLICT';
+  | 'SYNC_CONFLICT'
+  | 'OFFLINE_WIPE_CONFIRMED'
+  | 'OFFLINE_ONLINE_DETECTED';
 
 export interface BaseRecord {
   createdAt: string;
@@ -75,10 +77,22 @@ export interface Tenant extends BaseRecord {
   offlineLicense?: OfflineLicenseInfo;
   /** Orden de borrado remoto de todos los datos locales en cualquier dispositivo de la organización. */
   wipeLocalData?: boolean;
+  /** Fecha/hora en que el dispositivo cliente ejecutó y confirmó la purga de datos. */
+  wipeConfirmedAt?: string;
+  /** Información del dispositivo que confirmó la purga de datos. */
+  wipeConfirmedDevice?: string;
   /** Prohíbe la ejecución offline de la aplicación para esta organización. */
   offlineBlocked?: boolean;
   /** Desbloqueo administrativo expreso aplicado por el Super Admin (exime de bloqueo por mora > 5 días). */
   unlockedByAdmin?: boolean;
+  /** Indica si el banner insistente de cobro fue desactivado expresamente por el Super Admin. */
+  paymentBannerDeactivated?: boolean;
+  /** Telemetría: indica si la edición offline fue detectada operando con conexión a internet. */
+  offlineOnlineDetected?: boolean;
+  /** Fecha/hora de la última detección de conexión en la edición offline. */
+  offlineOnlineDetectedAt?: string;
+  /** Datos del dispositivo/navegador detectado en línea para la app offline. */
+  offlineDeviceInfo?: string;
 }
 
 export interface UserAccount extends BaseRecord {
