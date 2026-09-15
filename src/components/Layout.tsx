@@ -6,6 +6,7 @@ import {
   CalendarClock,
   Calculator,
   Check,
+  CheckCircle,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -26,6 +27,8 @@ import {
   ScrollText,
   Settings,
   ShieldCheck,
+  Smartphone,
+  Sparkles,
   Upload,
   Users,
   Wallet,
@@ -58,7 +61,7 @@ import {
   reportPurgeConfirmation,
 } from '../lib/offlineTelemetry';
 import { compressImageFile } from '../lib/imageSupport';
-import { cn, formatCOP, formatDateShort, todayStr } from '../lib/format';
+import { cn, diffDays, formatCOP, formatDateShort, todayStr } from '../lib/format';
 import { useToast } from './ui/toast';
 
 export default function Layout() {
@@ -102,6 +105,13 @@ export default function Layout() {
   const [bannerDismissedFor, setBannerDismissedFor] = useState('');
   const [noticeDismissedAt, setNoticeDismissedAt] = useState('');
   const [paymentBannerDismissed, setPaymentBannerDismissed] = useState(false);
+  const [benefitsBannerOpen, setBenefitsBannerOpen] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('presmon_benefits_banner_closed') !== 'true';
+    } catch {
+      return true;
+    }
+  });
 
   // Estado del menú vertical (plegable/desplegable) y versión móvil
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
@@ -131,6 +141,7 @@ export default function Layout() {
   const [copiedAccountId, setCopiedAccountId] = useState<string | null>(null);
 
   // Formulario de reporte de pago
+  const [reportType, setReportType] = useState<'FULL' | 'ABONO'>('FULL');
   const [reportBank, setReportBank] = useState('');
   const [reportAmount, setReportAmount] = useState<number>(0);
   const [reportRef, setReportRef] = useState('');
@@ -164,6 +175,16 @@ export default function Layout() {
   const isOverdueMoreThan5Days = monthlyInvoice.isOverdueMoreThan5Days;
   const unlockedByAdmin = tenantRecord?.unlockedByAdmin === true;
   const isAutoLockedForMora = isOverdueMoreThan5Days && !unlockedByAdmin;
+
+  // Detección y vigencia de 15 días del abono de la organización
+  const activeAbono = tenantRecord?.activeAbono;
+  const isAbonoActive =
+    session?.role === 'TENANT_ADMIN' &&
+    !!activeAbono &&
+    activeAbono.active !== false &&
+    activeAbono.remainingAmount > 0;
+  const abonoDaysRemaining = activeAbono ? diffDays(todayStr(), activeAbono.graceUntil) : 0;
+  const isAbonoGraceExpired = isAbonoActive && abonoDaysRemaining < 0;
 
   const showMonthlyInvoiceBanner =
     session?.role === 'TENANT_ADMIN' &&
@@ -201,10 +222,15 @@ export default function Layout() {
 
   const appLocked =
     session?.role === 'TENANT_ADMIN' &&
-    (tenantRecord?.appLocked === true || isAutoLockedForMora);
+    (tenantRecord?.appLocked === true || isAutoLockedForMora || (isAbonoGraceExpired && !unlockedByAdmin));
 
-  function handleOpenReportModal() {
-    setReportAmount(monthlyInvoice.totalInvoiceAmount);
+  function handleOpenReportModal(customAmount?: number) {
+    const defaultAmount =
+      customAmount ??
+      (tenantRecord?.activeAbono?.active && tenantRecord.activeAbono.remainingAmount > 0
+        ? tenantRecord.activeAbono.remainingAmount
+        : monthlyInvoice.totalInvoiceAmount);
+    setReportAmount(defaultAmount);
     setReportDate(todayStr());
     const activeBanks = (tenantRecord?.bankAccounts || []).filter((b) => b.active);
     if (activeBanks.length > 0 && !reportBank) {
@@ -253,6 +279,8 @@ export default function Layout() {
     setSubmittingReport(true);
     try {
       const now = new Date().toISOString();
+      const prefix = reportType === 'ABONO' ? '[ABONO A CUOTA] ' : '';
+      const notesCombined = (prefix + reportNotes.trim()).trim() || undefined;
       const newReport: PaymentReport = {
         reportId: crypto.randomUUID(),
         tenantId: session.tenantId,
@@ -261,7 +289,7 @@ export default function Layout() {
         referenceNumber: reportRef.trim(),
         bankName: reportBank.trim() || undefined,
         receiptImageBase64: reportImageBase64,
-        notes: reportNotes.trim() || undefined,
+        notes: notesCombined,
         status: 'PENDING',
         createdAt: now,
         updatedAt: now,
@@ -349,6 +377,7 @@ export default function Layout() {
         ? remote.data.paymentBannerExpiresAt
         : undefined;
     const nextNotice = (remote.data.notice ?? undefined) as Tenant['notice'];
+    const nextActiveAbono = (remote.data.activeAbono ?? undefined) as Tenant['activeAbono'];
     if (!local) return;
     const changed =
       local.appLocked !== nextLocked ||
@@ -359,7 +388,8 @@ export default function Layout() {
       local.paymentBannerDismissible !== nextPaymentDismissible ||
       local.paymentBannerExpiresAt !== nextPaymentExpiresAt ||
       JSON.stringify(local.bankAccounts ?? null) !== JSON.stringify(nextBankAccounts ?? null) ||
-      JSON.stringify(local.notice ?? null) !== JSON.stringify(nextNotice ?? null);
+      JSON.stringify(local.notice ?? null) !== JSON.stringify(nextNotice ?? null) ||
+      JSON.stringify(local.activeAbono ?? null) !== JSON.stringify(nextActiveAbono ?? null);
     if (!changed) return;
     await db.tenants.put({
       ...local,
@@ -372,6 +402,7 @@ export default function Layout() {
       paymentBannerDismissible: nextPaymentDismissible,
       paymentBannerExpiresAt: nextPaymentExpiresAt,
       notice: nextNotice,
+      activeAbono: nextActiveAbono,
       updatedAt: String(remote.data.updatedAt ?? local.updatedAt),
       syncStatus: 'SYNCED',
     });
@@ -803,12 +834,16 @@ export default function Layout() {
                 <Lock size={32} className="text-red-500" />
               </div>
               <h2 className="text-xl font-bold text-white">
-                {isAutoLockedForMora
+                {isAbonoGraceExpired
+                  ? 'Servicio suspendido: Plazo de abono vencido'
+                  : isAutoLockedForMora
                   ? 'Servicio suspendido por mora (> 5 días)'
                   : 'Servicio suspendido'}
               </h2>
               <p className="mt-2 text-sm leading-relaxed text-slate-300">
-                {isAutoLockedForMora
+                {isAbonoGraceExpired
+                  ? `Excediste el plazo de 15 días concedido tras tu abono para pagar el saldo restante de ${formatCOP(activeAbono?.remainingAmount || 0)}. Tu cuenta ha sido suspendida automáticamente hasta completar el pago.`
+                  : isAutoLockedForMora
                   ? `Tienes ${monthlyInvoice.maxDaysOverdue} días de vencimiento en tu factura mensual con ChrizDev. Para proteger la plataforma, tus operaciones están bloqueadas hasta que realices el pago o hasta que el Super Administrador desbloquee tu cuenta.`
                   : 'El acceso a PresMon está bloqueado por decisión del Super Administrador. Tus datos están a salvo y se restituirá el acceso inmediatamente después de ponerte al día.'}
               </p>
@@ -880,7 +915,138 @@ export default function Layout() {
         )}
 
         <main className="mx-auto max-w-6xl p-4 pb-24 lg:pb-8">
-          {showInsistentPaymentBanner && (
+          {/* Banner Automático de Abono Registrado con Saldo Restante y Vigencia de 15 Días */}
+          {isAbonoActive && activeAbono && (
+            <div
+              className={cn(
+                'relative mb-6 overflow-hidden rounded-2xl border-2 p-5 md:p-6 shadow-xl ring-4',
+                isAbonoGraceExpired
+                  ? 'border-red-600 bg-gradient-to-br from-red-50 via-white to-red-50 ring-red-600/10'
+                  : 'border-amber-500 bg-gradient-to-br from-amber-50 via-white to-emerald-50 ring-amber-500/10',
+              )}
+            >
+              <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                <div className="flex items-start gap-3.5">
+                  <div
+                    className={cn(
+                      'mt-0.5 flex h-12 w-12 shrink-0 items-center justify-center rounded-xl text-white shadow-md',
+                      isAbonoGraceExpired
+                        ? 'bg-red-600 shadow-red-600/30'
+                        : 'bg-gradient-to-br from-amber-500 to-emerald-600 shadow-amber-500/30',
+                    )}
+                  >
+                    <HandCoins size={24} />
+                  </div>
+                  <div className="space-y-1.5 pr-4">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span
+                        className={cn(
+                          'rounded-md px-2.5 py-0.5 text-xs font-bold text-white uppercase tracking-wide',
+                          isAbonoGraceExpired ? 'bg-red-600' : 'bg-emerald-600',
+                        )}
+                      >
+                        {isAbonoGraceExpired
+                          ? 'Plazo de 15 días vencido'
+                          : 'Abono Registrado · Vigencia 15 días'}
+                      </span>
+                      {abonoDaysRemaining >= 0 && (
+                        <span className="rounded-md bg-amber-100 px-2.5 py-0.5 text-xs font-bold text-amber-900 border border-amber-300">
+                          ⏳ Te quedan {abonoDaysRemaining} días de vigencia
+                        </span>
+                      )}
+                      <h3 className="text-base md:text-lg font-extrabold text-slate-900">
+                        {isAbonoGraceExpired
+                          ? 'Vigencia de Abono Expirada'
+                          : 'Abono Registrado · Saldo Restante por Pagar'}
+                      </h3>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs py-1">
+                      <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-2.5">
+                        <span className="text-emerald-700 block text-[11px] font-medium">
+                          Monto que abonaste:
+                        </span>
+                        <span className="text-base font-extrabold text-emerald-800">
+                          {formatCOP(activeAbono.amountPaid)}
+                        </span>
+                        <span className="text-[10px] text-emerald-600 block mt-0.5 truncate">
+                          Concepto: {activeAbono.concept}
+                        </span>
+                      </div>
+                      <div className="rounded-xl bg-amber-50 border border-amber-200 p-2.5">
+                        <span className="text-amber-700 block text-[11px] font-medium">
+                          Lo que te falta por pagar:
+                        </span>
+                        <span className="text-base font-extrabold text-red-600">
+                          {formatCOP(activeAbono.remainingAmount)}
+                        </span>
+                        <span className="text-[10px] text-amber-800 block mt-0.5">
+                          Fecha límite: {formatDateShort(activeAbono.graceUntil)}
+                        </span>
+                      </div>
+                    </div>
+
+                    <p
+                      className={cn(
+                        'text-xs font-bold leading-relaxed',
+                        isAbonoGraceExpired ? 'text-red-700' : 'text-slate-800',
+                      )}
+                    >
+                      ⚠️{' '}
+                      {isAbonoGraceExpired
+                        ? 'ADVERTENCIA CRÍTICA: Tu plazo de 15 días de vigencia ha expirado. Si no completas el pago restante hoy mismo, el sistema procederá a la desactivación definitiva de tu cuenta.'
+                        : `Aviso de vigencia: Cuentas con 15 días a partir de tu abono para completar el saldo restante (hasta el ${formatDateShort(activeAbono.graceUntil)}). El no pago oportuno en este periodo será causal de desactivación automática de la cuenta.`}
+                    </p>
+
+                    <p className="text-[11px] text-slate-500">
+                      * Al completar el saldo restante o al ser verificado tu pago por el Super Administrador, este aviso desaparecerá automáticamente.
+                    </p>
+
+                    {pendingPaymentReport && (
+                      <div className="mt-2.5 flex items-start gap-2.5 rounded-xl border border-amber-300 bg-amber-100/80 p-3 text-xs text-amber-900 shadow-sm">
+                        <Clock size={16} className="mt-0.5 shrink-0 text-amber-700" />
+                        <div>
+                          <p className="font-bold">Comprobante de pago en revisión por Super Admin</p>
+                          <p className="text-amber-800">
+                            Reportaste un pago por <strong>{formatCOP(pendingPaymentReport.amount)}</strong> (Ref: <code>{pendingPaymentReport.referenceNumber}</code>). El Super Admin está verificando la transacción.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="w-full md:w-auto shrink-0 flex flex-col sm:flex-row md:flex-col gap-2">
+                  <button
+                    onClick={() => handleOpenReportModal(activeAbono.remainingAmount)}
+                    className="w-full cursor-pointer rounded-xl bg-emerald-600 hover:bg-emerald-500 px-4 py-2.5 text-center text-xs font-bold text-white shadow-md shadow-emerald-600/20 transition-all flex items-center justify-center gap-2"
+                  >
+                    <Upload size={15} /> Completar Pago ({formatCOP(activeAbono.remainingAmount)})
+                  </button>
+                  <button
+                    onClick={() => setBankAccountsModalOpen(true)}
+                    className="w-full cursor-pointer rounded-xl bg-white hover:bg-slate-50 border border-slate-300 px-4 py-2.5 text-center text-xs font-bold text-slate-700 shadow-sm transition-all flex items-center justify-center gap-2"
+                  >
+                    <Landmark size={15} /> Cuentas para Depósito
+                  </button>
+                  <button
+                    onClick={() =>
+                      openWhatsApp(
+                        `Hola ChrizDev, soy ${session?.tenantName ?? 'un cliente'} de PresMon. He realizado un abono y deseo liquidar el saldo restante de ${formatCOP(activeAbono.remainingAmount)} (vigencia hasta ${formatDateShort(activeAbono.graceUntil)}) para mantener mi cuenta activa.`,
+                        effectiveWhatsApp,
+                      )
+                    }
+                    className="w-full cursor-pointer rounded-xl bg-slate-900 hover:bg-slate-800 px-4 py-2.5 text-center text-xs font-bold text-white shadow-sm transition-all flex items-center justify-center gap-2"
+                  >
+                    <MessageCircle size={15} /> WhatsApp ({effectiveWhatsAppDisplay})
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Banner Obligatorio de Factura Vencida (si no hay abono activo) */}
+          {showInsistentPaymentBanner && !isAbonoActive && (
             <div className="relative mb-6 overflow-hidden rounded-2xl border-2 border-red-500 bg-gradient-to-br from-red-50 via-white to-amber-50 p-5 md:p-6 shadow-xl ring-4 ring-red-500/10">
               {isPaymentDismissible && (
                 <button
@@ -931,7 +1097,7 @@ export default function Layout() {
                       )}
                     </div>
                     <p className="pt-2 text-xs font-bold text-red-700 leading-relaxed">
-                      ⚠️ Advertencia: El no pago oportuno será causal de desactivación definitiva de la cuenta.
+                      ⚠️ Advertencia: El no pago oportuno será causal de desactivación definitiva de la cuenta. Puedes abonar a tu cuota para obtener una vigencia de 15 días adicionales.
                     </p>
                     <p className="text-[11px] text-slate-500">
                       {isPaymentDismissible
@@ -955,10 +1121,10 @@ export default function Layout() {
 
                 <div className="w-full md:w-auto shrink-0 flex flex-col sm:flex-row md:flex-col gap-2">
                   <button
-                    onClick={handleOpenReportModal}
+                    onClick={() => handleOpenReportModal()}
                     className="w-full cursor-pointer rounded-xl bg-emerald-600 hover:bg-emerald-500 px-4 py-2.5 text-center text-xs font-bold text-white shadow-md shadow-emerald-600/20 transition-all flex items-center justify-center gap-2"
                   >
-                    <Upload size={15} /> Reportar Pago con Comprobante
+                    <Upload size={15} /> Pagar o Abonar a Cuota
                   </button>
                   <button
                     onClick={() => setBankAccountsModalOpen(true)}
@@ -976,6 +1142,111 @@ export default function Layout() {
                     className="w-full cursor-pointer rounded-xl bg-slate-900 hover:bg-slate-800 px-4 py-2.5 text-center text-xs font-bold text-white shadow-sm transition-all flex items-center justify-center gap-2"
                   >
                     <MessageCircle size={15} /> WhatsApp ({effectiveWhatsAppDisplay})
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Banner de Beneficios del Servicio Cloud y Protección contra Pérdida de Datos */}
+          {session?.role === 'TENANT_ADMIN' && benefitsBannerOpen && (
+            <div className="relative mb-6 overflow-hidden rounded-2xl border border-sky-200 bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 p-5 md:p-6 text-white shadow-xl">
+              <button
+                onClick={() => {
+                  setBenefitsBannerOpen(false);
+                  try {
+                    localStorage.setItem('presmon_benefits_banner_closed', 'true');
+                  } catch {
+                    /* noop */
+                  }
+                }}
+                className="absolute top-3 right-3 cursor-pointer rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white transition-colors"
+                title="Cerrar recordatorio de beneficios"
+                aria-label="Cerrar recordatorio de beneficios"
+              >
+                <X size={18} />
+              </button>
+
+              <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-5">
+                <div className="space-y-2.5 max-w-3xl">
+                  <div className="flex items-center gap-2.5">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sky-500/20 text-sky-400 border border-sky-500/30">
+                      <Cloud size={22} />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="rounded bg-sky-500/20 text-sky-300 text-[10px] font-bold px-2 py-0.5 uppercase tracking-wider border border-sky-400/20">
+                          Servicio Cloud Activo
+                        </span>
+                        <span className="flex items-center gap-1 text-[11px] text-emerald-400 font-semibold">
+                          <CheckCircle size={12} /> Sincronización Blindada
+                        </span>
+                      </div>
+                      <h3 className="text-base md:text-lg font-bold text-white mt-0.5">
+                        Beneficios de mantener tu Servicio Cloud activo y al día
+                      </h3>
+                    </div>
+                  </div>
+
+                  <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+                    Pagar a tiempo asegura la continuidad operativa de tu empresa y evita que el servicio cloud se cierre, previniendo cualquier riesgo de pérdida o aislamiento de tus datos:
+                  </p>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+                    <div className="flex items-start gap-2.5 rounded-xl bg-white/5 border border-white/10 p-3">
+                      <ShieldCheck size={18} className="text-emerald-400 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-semibold text-xs text-white">Cero Pérdida de Datos</p>
+                        <p className="text-[11px] text-slate-300">
+                          Respaldos automáticos en la nube. Si pierdes, te roban o se daña tu celular o PC, toda tu cartera sigue a salvo y recuperable al instante.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-start gap-2.5 rounded-xl bg-white/5 border border-white/10 p-3">
+                      <Sparkles size={18} className="text-sky-400 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-semibold text-xs text-white">Sincronización en Vivo</p>
+                        <p className="text-[11px] text-slate-300">
+                          Tus cobradores en la calle y la administración ven los cobros en tiempo real sin duplicidad ni diferencias en caja.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-start gap-2.5 rounded-xl bg-white/5 border border-white/10 p-3">
+                      <Smartphone size={18} className="text-indigo-400 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-semibold text-xs text-white">Acceso Multidispositivo 24/7</p>
+                        <p className="text-[11px] text-slate-300">
+                          Ingresa desde cualquier navegador o teléfono sin limitaciones ni depender de un único equipo físico.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-start gap-2.5 rounded-xl bg-white/5 border border-white/10 p-3">
+                      <AlertTriangle size={18} className="text-amber-400 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-semibold text-xs text-amber-300">Prevención de Suspensión</p>
+                        <p className="text-[11px] text-slate-300">
+                          El impago causa la suspensión del servicio Cloud, impidiendo la sincronización de cobros y el acceso seguro a tus datos.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="shrink-0 flex flex-col sm:flex-row lg:flex-col gap-2 w-full lg:w-48">
+                  <button
+                    onClick={() => handleOpenReportModal()}
+                    className="w-full cursor-pointer rounded-xl bg-emerald-500 hover:bg-emerald-400 px-4 py-2.5 text-center text-xs font-bold text-slate-950 shadow-lg shadow-emerald-500/20 transition-all flex items-center justify-center gap-2"
+                  >
+                    <Upload size={14} /> Pagar / Abonar a Cuota
+                  </button>
+                  <button
+                    onClick={() => setBankAccountsModalOpen(true)}
+                    className="w-full cursor-pointer rounded-xl bg-white/10 hover:bg-white/15 border border-white/20 px-4 py-2.5 text-center text-xs font-semibold text-white transition-all flex items-center justify-center gap-2"
+                  >
+                    <Landmark size={14} /> Cuentas Bancarias
                   </button>
                 </div>
               </div>
@@ -1144,6 +1415,51 @@ export default function Layout() {
             </div>
 
             <div className="mt-4 space-y-3.5">
+              {/* Modalidad del Reporte */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                  Tipo de Operación *
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReportType('FULL');
+                      setReportAmount(monthlyInvoice.totalInvoiceAmount);
+                    }}
+                    className={cn(
+                      'cursor-pointer rounded-xl border p-2 text-xs font-semibold transition-all text-center',
+                      reportType === 'FULL'
+                        ? 'border-emerald-600 bg-emerald-50 text-emerald-800 ring-2 ring-emerald-500/20'
+                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50',
+                    )}
+                  >
+                    Pago Total Factura
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReportType('ABONO');
+                      const half = Math.round(monthlyInvoice.totalInvoiceAmount / 2);
+                      setReportAmount(half > 0 ? half : 50000);
+                    }}
+                    className={cn(
+                      'cursor-pointer rounded-xl border p-2 text-xs font-semibold transition-all text-center',
+                      reportType === 'ABONO'
+                        ? 'border-amber-500 bg-amber-50 text-amber-900 ring-2 ring-amber-500/20'
+                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50',
+                    )}
+                  >
+                    Abonar a Cuota (15d)
+                  </button>
+                </div>
+                {reportType === 'ABONO' && (
+                  <p className="mt-1.5 text-[11px] text-amber-800 bg-amber-50 rounded-lg p-2 border border-amber-200 leading-relaxed">
+                    💡 <strong>Abono con prórroga:</strong> Al registrar un abono a tu cuota obtienes una vigencia de 15 días adicionales para liquidar el saldo restante antes de la desactivación de la cuenta.
+                  </p>
+                )}
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">
@@ -1156,6 +1472,36 @@ export default function Layout() {
                     className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold focus:border-emerald-500 focus:outline-none"
                     placeholder="0"
                   />
+                  {/* Atajos rápidos de monto */}
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {monthlyInvoice.totalInvoiceAmount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setReportAmount(monthlyInvoice.totalInvoiceAmount)}
+                        className="cursor-pointer rounded bg-slate-100 hover:bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700"
+                      >
+                        Total: {formatCOP(monthlyInvoice.totalInvoiceAmount)}
+                      </button>
+                    )}
+                    {monthlyInvoice.totalInvoiceAmount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setReportAmount(Math.round(monthlyInvoice.totalInvoiceAmount / 2))}
+                        className="cursor-pointer rounded bg-slate-100 hover:bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700"
+                      >
+                        50%: {formatCOP(monthlyInvoice.totalInvoiceAmount / 2)}
+                      </button>
+                    )}
+                    {tenantRecord?.activeAbono?.active && tenantRecord.activeAbono.remainingAmount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setReportAmount(tenantRecord.activeAbono!.remainingAmount)}
+                        className="cursor-pointer rounded bg-emerald-100 hover:bg-emerald-200 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800"
+                      >
+                        Restante: {formatCOP(tenantRecord.activeAbono.remainingAmount)}
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">

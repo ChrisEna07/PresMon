@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
   AlertTriangle,
@@ -14,6 +14,7 @@ import {
   Eye,
   FileCode,
   Globe,
+  HandCoins,
   HardDriveDownload,
   Image as ImageIcon,
   KeyRound,
@@ -34,6 +35,7 @@ import type {
   NoticeLevel,
   PaymentReport,
   PaymentReportStatus,
+  PlanInstallment,
   ServicePlan,
   Tenant,
 } from '../db/models';
@@ -42,7 +44,7 @@ import { useAuth } from '../store/auth';
 import { sha256Hex } from '../lib/crypto';
 import { logAudit } from '../lib/auditLogger';
 import { uid } from '../lib/id';
-import { cn, formatCOP, formatDateTime } from '../lib/format';
+import { addDaysStr, cn, formatCOP, formatDateShort, formatDateTime, todayStr } from '../lib/format';
 import { computeMonthlyInvoice } from '../lib/billingEngine';
 import { PageHeader, StatCard } from '../components/misc';
 import { Badge } from '../components/ui/badge';
@@ -71,6 +73,7 @@ function pushToCloud(): void {
 export default function SuperAdminPage() {
   const { session } = useAuth();
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState('');
   const [newUsername, setNewUsername] = useState('');
@@ -845,6 +848,109 @@ export default function SuperAdminPage() {
     toast(`Pago de ${formatCOP(report.amount)} APROBADO. Se desactivó el banner de cobro para «${tenant?.name ?? 'la organización'}».`, 'success');
   }
 
+  async function handleApproveReportAsAbono(report: PaymentReport) {
+    if (!session) return;
+    const tenant = (tenants ?? []).find((t) => t.tenantId === report.tenantId);
+    const now = new Date().toISOString();
+    const today = todayStr();
+    const graceUntil = addDaysStr(today, 15);
+
+    // Buscar plan de la organización para aplicar el abono a la cuota pendiente
+    const plan = planByTenant.get(report.tenantId);
+    let concept = 'Cuota mensual de la app';
+    let remaining = 0;
+    let totalDue = report.amount;
+
+    if (plan && plan.installments && plan.installments.length > 0) {
+      const pendingInst = plan.installments.find(
+        (i) => i.status === 'PENDING' && (Number(i.amount) || 0) > (Number(i.paidAmount) || 0),
+      );
+      if (pendingInst) {
+        concept = pendingInst.concept;
+        totalDue = Number(pendingInst.amount) || 0;
+        const currentPaid = Number(pendingInst.paidAmount) || 0;
+        const newPaid = currentPaid + report.amount;
+        remaining = Math.max(0, totalDue - newPaid);
+        const isFull = remaining === 0 || newPaid >= totalDue;
+
+        const updatedInstallments = plan.installments.map((i) =>
+          i.installmentId === pendingInst.installmentId
+            ? {
+                ...i,
+                paidAmount: isFull ? totalDue : newPaid,
+                status: (isFull ? 'PAID' : 'PENDING') as PlanInstallment['status'],
+                paidAt: isFull ? now : i.paidAt,
+                lastAbonoAt: now,
+                graceUntil: isFull ? undefined : graceUntil,
+              }
+            : i,
+        );
+
+        await db.plans.put({
+          ...plan,
+          installments: updatedInstallments,
+          updatedAt: now,
+          syncStatus: 'PENDING',
+        });
+      }
+    }
+
+    const updatedReport: PaymentReport = {
+      ...report,
+      status: 'APPROVED',
+      reviewedAt: now,
+      reviewedBy: session.displayName,
+      notes:
+        (report.notes ? report.notes + ' · ' : '') +
+        `Aprobado como abono con 15 días de vigencia (hasta ${graceUntil}). Saldo restante: ${formatCOP(remaining)}`,
+      updatedAt: now,
+      syncStatus: 'PENDING',
+    };
+    await db.payment_reports.put(updatedReport);
+
+    if (tenant) {
+      await saveTenant({
+        ...tenant,
+        activeAbono: {
+          abonoId: uid(),
+          concept,
+          amountPaid: report.amount,
+          remainingAmount: remaining,
+          totalDue,
+          abonoDate: today,
+          graceUntil,
+          active: true,
+          notes: `Comprobante ref: ${report.referenceNumber}`,
+        },
+        unlockedByAdmin: true,
+        paymentBannerDeactivated: false,
+        updatedAt: now,
+        syncStatus: 'PENDING',
+      });
+    }
+
+    await logAudit({
+      tenantId: report.tenantId,
+      action: 'PAYMENT_REPORT_APPROVED_AS_ABONO',
+      actorId: session.userId,
+      actorName: session.displayName,
+      entityId: report.reportId,
+      entityType: 'payment_reports',
+      payloadSnapshot: {
+        montoAbonado: report.amount,
+        referencia: report.referenceNumber,
+        saldoRestante: remaining,
+        vigencia15DiasHasta: graceUntil,
+      },
+    });
+
+    pushToCloud();
+    toast(
+      `Comprobante aprobado como ABONO de ${formatCOP(report.amount)}. Se activó el banner de saldo restante con 15 días de vigencia (hasta ${formatDateShort(graceUntil)}).`,
+      'success',
+    );
+  }
+
   async function handleRejectReport(e: FormEvent) {
     e.preventDefault();
     if (!session || !rejectReportTarget) return;
@@ -1318,6 +1424,18 @@ export default function SuperAdminPage() {
                     <span>{t.paymentBannerDeactivated ? 'Activar banner cobro' : 'Desactivar banner cobro'}</span>
                   </button>
                 )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionMenu(null);
+                    navigate('/super-plans');
+                  }}
+                  className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-emerald-50/70 transition-colors text-left text-emerald-800 font-medium cursor-pointer"
+                >
+                  <HandCoins size={14} className="text-emerald-600 shrink-0" />
+                  <span>Gestionar plan y abonar a cuota</span>
+                </button>
               </div>
 
               {/* Grupo 2: Seguridad y Purga Offline */}
@@ -1877,9 +1995,18 @@ export default function SuperAdminPage() {
                             <div className="flex items-center justify-end gap-1.5">
                               <Button
                                 size="sm"
+                                variant="outline"
+                                className="text-amber-700 border-amber-300 hover:bg-amber-50"
+                                onClick={() => void handleApproveReportAsAbono(r)}
+                                title="Aprobar como Abono y otorgar 15 días de vigencia para pagar el resto"
+                              >
+                                <HandCoins size={13} /> Abono 15d
+                              </Button>
+                              <Button
+                                size="sm"
                                 className="bg-emerald-600 hover:bg-emerald-500 text-white"
                                 onClick={() => void handleApproveReport(r)}
-                                title="Aprobar pago y desactivar aviso de cobro"
+                                title="Aprobar pago completo y desactivar aviso de cobro"
                               >
                                 <CheckCircle size={13} /> Aprobar
                               </Button>
@@ -2334,6 +2461,18 @@ export default function SuperAdminPage() {
                   <XCircle size={14} /> Rechazar
                 </Button>
                 <Button
+                  variant="outline"
+                  className="text-amber-700 border-amber-300 hover:bg-amber-50"
+                  onClick={() => {
+                    const target = viewingReceipt;
+                    setViewingReceipt(null);
+                    void handleApproveReportAsAbono(target);
+                  }}
+                  title="Aprobar como abono a cuota y conceder 15 días de vigencia"
+                >
+                  <HandCoins size={14} /> Abono 15d
+                </Button>
+                <Button
                   className="bg-emerald-600 hover:bg-emerald-500 text-white"
                   onClick={() => {
                     const target = viewingReceipt;
@@ -2341,7 +2480,7 @@ export default function SuperAdminPage() {
                     void handleApproveReport(target);
                   }}
                 >
-                  <CheckCircle size={14} /> Aprobar Pago
+                  <CheckCircle size={14} /> Aprobar Total
                 </Button>
               </>
             )}

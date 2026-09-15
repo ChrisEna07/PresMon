@@ -8,6 +8,7 @@ import {
   CalendarPlus,
   Cloud,
   CreditCard,
+  HandCoins,
   Megaphone,
   Plus,
   Save,
@@ -26,6 +27,7 @@ import { PageHeader } from '../components/misc';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../components/ui/card';
+import { Dialog } from '../components/ui/dialog';
 import { Input, Label, Select } from '../components/ui/input';
 import { Switch } from '../components/ui/switch';
 import { TBody, TD, TH, THead, TR, TableWrap } from '../components/ui/table';
@@ -66,6 +68,14 @@ export default function SuperPlansPage() {
   const [genStart, setGenStart] = useState(today);
   const [genEveryDays, setGenEveryDays] = useState('30');
   const [saving, setSaving] = useState(false);
+
+  // Modal para abonar a cuota
+  const [abonoModalOpen, setAbonoModalOpen] = useState(false);
+  const [abonoTargetRow, setAbonoTargetRow] = useState<PlanInstallment | null>(null);
+  const [abonoAmount, setAbonoAmount] = useState('');
+  const [abonoGrace15Days, setAbonoGrace15Days] = useState(true);
+  const [abonoNotes, setAbonoNotes] = useState('');
+  const [savingAbono, setSavingAbono] = useState(false);
 
   const planByTenant = useMemo(() => {
     const map = new Map<string, ServicePlan>();
@@ -233,14 +243,158 @@ export default function SuperPlansPage() {
     }
   }
 
+  function handleOpenAbonoModal(r: PlanInstallment) {
+    const paid = Number(r.paidAmount) || 0;
+    const remaining = Math.max(0, (Number(r.amount) || 0) - paid);
+    setAbonoTargetRow(r);
+    setAbonoAmount(remaining > 0 ? String(Math.round(remaining / 2)) : '');
+    setAbonoGrace15Days(true);
+    setAbonoNotes('');
+    setAbonoModalOpen(true);
+  }
+
+  async function handleConfirmAbono() {
+    if (!session || !tenantId || !abonoTargetRow) return;
+    const amountVal = Math.round(Number(abonoAmount) || 0);
+    if (!amountVal || amountVal <= 0) {
+      toast('Ingresa un monto válido para el abono.', 'error');
+      return;
+    }
+    const currentPaid = Number(abonoTargetRow.paidAmount) || 0;
+    const currentDue = Number(abonoTargetRow.amount) || 0;
+    const newPaidTotal = currentPaid + amountVal;
+    const remaining = Math.max(0, currentDue - newPaidTotal);
+    const isFullyPaid = remaining === 0 || newPaidTotal >= currentDue;
+    const graceUntil = addDaysStr(today, 15);
+
+    setSavingAbono(true);
+    try {
+      const now = nowISO();
+      // Actualizar fila en estado local
+      const updatedRows = rows.map((r) =>
+        r.installmentId === abonoTargetRow.installmentId
+          ? {
+              ...r,
+              paidAmount: isFullyPaid ? currentDue : newPaidTotal,
+              status: (isFullyPaid ? 'PAID' : 'PENDING') as PlanInstallment['status'],
+              paidAt: isFullyPaid ? now : r.paidAt,
+              lastAbonoAt: now,
+              graceUntil: isFullyPaid ? undefined : abonoGrace15Days ? graceUntil : undefined,
+            }
+          : r,
+      );
+      setRows(updatedRows);
+
+      // Guardar plan directamente en Dexie y preparar sync
+      const plan = existingPlanForOrg || {
+        planId: uid(),
+        tenantId,
+        name: name.trim() || 'Plan de Servicio',
+        cloudServiceIncluded: cloudIncluded,
+        appPaymentMode: payMode,
+        appTotalAmount: Number(appTotal) || 0,
+        cloudMonthlyFee: Number(cloudFee) || 0,
+        cloudBillingDay: Number(cloudBillingDay) || 1,
+        installments: [],
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: 'PENDING' as const,
+      };
+
+      const updatedPlan: ServicePlan = {
+        ...plan,
+        installments: updatedRows.map((r) => ({
+          ...r,
+          amount: Math.max(0, Math.round(Number(r.amount) || 0)),
+        })),
+        updatedAt: now,
+        syncStatus: 'PENDING',
+      };
+      await db.plans.put(updatedPlan);
+
+      // Actualizar tenant con el activeAbono y desbloqueo durante la vigencia de 15 días
+      const tenant = await db.tenants.get(tenantId);
+      if (tenant) {
+        if (!isFullyPaid && abonoGrace15Days) {
+          await db.tenants.put({
+            ...tenant,
+            activeAbono: {
+              abonoId: uid(),
+              installmentId: abonoTargetRow.installmentId,
+              concept: abonoTargetRow.concept,
+              amountPaid: amountVal,
+              remainingAmount: remaining,
+              totalDue: currentDue,
+              abonoDate: today,
+              graceUntil,
+              active: true,
+              notes: abonoNotes.trim() || undefined,
+            },
+            unlockedByAdmin: true, // otorga acceso durante los 15 días de vigencia
+            updatedAt: now,
+            syncStatus: 'PENDING',
+          });
+        } else if (isFullyPaid) {
+          await db.tenants.put({
+            ...tenant,
+            activeAbono: undefined,
+            updatedAt: now,
+            syncStatus: 'PENDING',
+          });
+        }
+      }
+
+      await logAudit({
+        tenantId,
+        action: 'PLAN_INSTALLMENT_ABONO',
+        actorId: session.userId,
+        actorName: session.displayName,
+        entityId: abonoTargetRow.installmentId,
+        entityType: 'plans',
+        payloadSnapshot: {
+          organizacion: tenant?.name ?? tenantId,
+          cuota: abonoTargetRow.concept,
+          abonoAplicado: amountVal,
+          saldoRestante: remaining,
+          totalCuota: currentDue,
+          vigencia15DiasHasta: abonoGrace15Days ? graceUntil : 'Sin vigencia',
+          cuotaPagadaTotal: isFullyPaid,
+          notas: abonoNotes.trim() || undefined,
+        },
+      });
+
+      pushToCloud();
+      setAbonoModalOpen(false);
+      setAbonoTargetRow(null);
+      setDirty(false);
+      toast(
+        isFullyPaid
+          ? `¡Cuota saldada al 100%! (${formatCOP(currentDue)})`
+          : `Abono de ${formatCOP(amountVal)} aplicado. Restan ${formatCOP(remaining)} con 15 días de vigencia hasta el ${formatDateShort(graceUntil)}.`,
+        'success',
+      );
+    } catch (err) {
+      toast('Error al aplicar el abono: ' + String(err), 'error');
+    } finally {
+      setSavingAbono(false);
+    }
+  }
+
   const summary = useMemo(() => {
     const total = rows.reduce((s, r) => s + (Number(r.amount) || 0), 0);
-    const paid = rows.filter((r) => r.status === 'PAID').reduce((s, r) => s + (Number(r.amount) || 0), 0);
-    const pendingTotal = total - paid;
-    const nextPending = rows.find((r) => r.status === 'PENDING');
+    const paid = rows.reduce((s, r) => {
+      if (r.status === 'PAID') return s + (Number(r.amount) || 0);
+      return s + (Number(r.paidAmount) || 0);
+    }, 0);
+    const pendingTotal = Math.max(0, total - paid);
+    const nextPending = rows.find(
+      (r) => r.status === 'PENDING' && (Number(r.amount) || 0) > (Number(r.paidAmount) || 0),
+    );
     const appTotalNum = Number(appTotal) || 0;
     const cloudFeeNum = Number(cloudFee) || 0;
-    const nextPendingAmount = nextPending ? Number(nextPending.amount) || 0 : 0;
+    const nextPendingAmount = nextPending
+      ? Math.max(0, (Number(nextPending.amount) || 0) - (Number(nextPending.paidAmount) || 0))
+      : 0;
     const monthlyInvoiceEst = (cloudIncluded ? cloudFeeNum : 0) + nextPendingAmount;
     return {
       total,
@@ -611,62 +765,112 @@ export default function SuperPlansPage() {
                 </p>
               ) : (
                 <TableWrap>
-              <THead>
-                <TR>
-                  <TH>Vence</TH>
-                  <TH>Concepto</TH>
-                  <TH>Valor</TH>
-                  <TH>Estado</TH>
-                  <TH className="text-right">Acciones</TH>
-                </TR>
-              </THead>
-              <TBody>
-                {rows.map((r) => (
-                  <TR key={r.installmentId}>
-                    <TD>
-                      <Input
-                        type="date"
-                        value={r.dueDate}
-                        onChange={(e) => updateRow(r.installmentId, { dueDate: e.target.value })}
-                        className="w-40"
-                      />
-                    </TD>
-                    <TD>
-                      <Input
-                        value={r.concept}
-                        onChange={(e) => updateRow(r.installmentId, { concept: e.target.value })}
-                        className="min-w-40"
-                      />
-                    </TD>
-                    <TD>
-                      <Input
-                        value={String(r.amount)}
-                        onChange={(e) => updateRow(r.installmentId, { amount: Number(e.target.value) })}
-                        inputMode="numeric"
-                        className="w-28"
-                      />
-                    </TD>
-                    <TD>
-                      <Switch
-                        checked={r.status === 'PAID'}
-                        label="Pagada"
-                        onChange={() =>
-                          updateRow(r.installmentId, {
-                            status: r.status === 'PAID' ? 'PENDING' : 'PAID',
-                            paidAt: r.status === 'PAID' ? undefined : nowISO(),
-                          })
-                        }
-                      />
-                    </TD>
-                    <TD className="text-right">
-                      <Button variant="ghost" size="icon" onClick={() => removeRow(r.installmentId)} title="Quitar cuota">
-                        <Trash2 size={14} className="text-red-500" />
-                      </Button>
-                    </TD>
-                  </TR>
-                ))}
-              </TBody>
-            </TableWrap>
+                  <THead>
+                    <TR>
+                      <TH>Vence</TH>
+                      <TH>Concepto</TH>
+                      <TH>Valor Cuota</TH>
+                      <TH>Abonado / Saldo</TH>
+                      <TH>Estado</TH>
+                      <TH className="text-right">Acciones</TH>
+                    </TR>
+                  </THead>
+                  <TBody>
+                    {rows.map((r) => {
+                      const paid = Number(r.paidAmount) || 0;
+                      const remaining = Math.max(0, (Number(r.amount) || 0) - paid);
+                      const isPaid = r.status === 'PAID';
+                      return (
+                        <TR key={r.installmentId}>
+                          <TD>
+                            <Input
+                              type="date"
+                              value={r.dueDate}
+                              onChange={(e) => updateRow(r.installmentId, { dueDate: e.target.value })}
+                              className="w-36"
+                            />
+                          </TD>
+                          <TD>
+                            <Input
+                              value={r.concept}
+                              onChange={(e) => updateRow(r.installmentId, { concept: e.target.value })}
+                              className="min-w-36"
+                            />
+                          </TD>
+                          <TD>
+                            <Input
+                              value={String(r.amount)}
+                              onChange={(e) =>
+                                updateRow(r.installmentId, { amount: Number(e.target.value) })
+                              }
+                              inputMode="numeric"
+                              className="w-28"
+                            />
+                          </TD>
+                          <TD>
+                            {isPaid ? (
+                              <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-1 rounded-md">
+                                Pagado 100% ({formatCOP(r.amount)})
+                              </span>
+                            ) : paid > 0 ? (
+                              <div className="text-xs space-y-0.5">
+                                <span className="font-semibold text-emerald-700 block">
+                                  Abonado: {formatCOP(paid)}
+                                </span>
+                                <span className="font-bold text-amber-800 block">
+                                  Falta: {formatCOP(remaining)}
+                                </span>
+                                {r.graceUntil && (
+                                  <span className="text-[10px] text-slate-500 block">
+                                    Vigencia 15d: {formatDateShort(r.graceUntil)}
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-slate-400">Sin abonos</span>
+                            )}
+                          </TD>
+                          <TD>
+                            <Switch
+                              checked={r.status === 'PAID'}
+                              label="Pagada"
+                              onChange={() =>
+                                updateRow(r.installmentId, {
+                                  status: r.status === 'PAID' ? 'PENDING' : 'PAID',
+                                  paidAt: r.status === 'PAID' ? undefined : nowISO(),
+                                  paidAmount: r.status === 'PAID' ? 0 : r.amount,
+                                })
+                              }
+                            />
+                          </TD>
+                          <TD className="text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              {!isPaid && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleOpenAbonoModal(r)}
+                                  title="Registrar abono a esta cuota"
+                                  className="text-emerald-700 hover:text-emerald-800 border-emerald-300 hover:bg-emerald-50 text-xs px-2.5 h-8 gap-1 cursor-pointer"
+                                >
+                                  <HandCoins size={13} /> Abonar
+                                </Button>
+                              )}
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => removeRow(r.installmentId)}
+                                title="Quitar cuota"
+                              >
+                                <Trash2 size={14} className="text-red-500" />
+                              </Button>
+                            </div>
+                          </TD>
+                        </TR>
+                      );
+                    })}
+                  </TBody>
+                </TableWrap>
               )}
             </>
           )}
@@ -684,6 +888,134 @@ export default function SuperPlansPage() {
             )}
           </div>
         </>
+      )}
+
+      {/* Modal para Registrar Abono a Cuota */}
+      {abonoModalOpen && abonoTargetRow && (
+        <Dialog
+          open={abonoModalOpen}
+          onClose={() => {
+            if (!savingAbono) {
+              setAbonoModalOpen(false);
+              setAbonoTargetRow(null);
+            }
+          }}
+          title="Registrar Abono a Cuota"
+          description={`Abonar a: ${abonoTargetRow.concept}`}
+        >
+          <div className="space-y-4">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5 text-xs space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-slate-500">Valor total cuota:</span>
+                <span className="font-bold text-slate-800">{formatCOP(abonoTargetRow.amount)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Ya abonado previamente:</span>
+                <span className="font-semibold text-emerald-700">
+                  {formatCOP(Number(abonoTargetRow.paidAmount) || 0)}
+                </span>
+              </div>
+              <div className="flex justify-between border-t border-slate-200 pt-1">
+                <span className="font-semibold text-slate-700">Saldo pendiente actual:</span>
+                <span className="font-bold text-amber-700">
+                  {formatCOP(
+                    Math.max(
+                      0,
+                      (Number(abonoTargetRow.amount) || 0) - (Number(abonoTargetRow.paidAmount) || 0),
+                    ),
+                  )}
+                </span>
+              </div>
+            </div>
+
+            <div>
+              <Label>Monto a abonar ahora (COP)</Label>
+              <Input
+                type="number"
+                min={1}
+                value={abonoAmount}
+                onChange={(e) => setAbonoAmount(e.target.value)}
+                placeholder="Ej: 50000"
+                autoFocus
+              />
+              {/* Botones de atajo rápido */}
+              {(() => {
+                const pend = Math.max(
+                  0,
+                  (Number(abonoTargetRow.amount) || 0) - (Number(abonoTargetRow.paidAmount) || 0),
+                );
+                return (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setAbonoAmount(String(Math.round(pend * 0.25)))}
+                      className="cursor-pointer rounded-lg bg-slate-100 hover:bg-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-700"
+                    >
+                      25% ({formatCOP(pend * 0.25)})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAbonoAmount(String(Math.round(pend * 0.5)))}
+                      className="cursor-pointer rounded-lg bg-slate-100 hover:bg-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-700"
+                    >
+                      50% ({formatCOP(pend * 0.5)})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAbonoAmount(String(pend))}
+                      className="cursor-pointer rounded-lg bg-emerald-100 hover:bg-emerald-200 px-2 py-1 text-[11px] font-bold text-emerald-800"
+                    >
+                      Pagar resto ({formatCOP(pend)})
+                    </button>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Switch de vigencia de 15 días */}
+            <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-3">
+              <Switch
+                checked={abonoGrace15Days}
+                label="Otorgar aviso y vigencia de 15 días para pagar el saldo restante"
+                onChange={() => setAbonoGrace15Days((prev) => !prev)}
+              />
+              <p className="mt-1 text-[11px] text-amber-800 leading-relaxed">
+                Al activar esta opción, en el panel de la organización aparecerá el banner automático
+                con el saldo que le falta por pagar y la fecha límite de 15 días. Si no cancela el
+                saldo en ese periodo, el sistema advertirá y desactivará la cuenta.
+              </p>
+            </div>
+
+            <div>
+              <Label>Notas o referencia del abono (opcional)</Label>
+              <Input
+                value={abonoNotes}
+                onChange={(e) => setAbonoNotes(e.target.value)}
+                placeholder="Ej. Transferencia Nequi ref: 894372"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setAbonoModalOpen(false);
+                  setAbonoTargetRow(null);
+                }}
+                disabled={savingAbono}
+              >
+                Cancelar
+              </Button>
+              <Button
+                onClick={() => void handleConfirmAbono()}
+                disabled={savingAbono}
+                className="bg-emerald-600 hover:bg-emerald-500 cursor-pointer"
+              >
+                <HandCoins size={14} /> {savingAbono ? 'Aplicando…' : 'Aplicar Abono'}
+              </Button>
+            </div>
+          </div>
+        </Dialog>
       )}
     </div>
   );

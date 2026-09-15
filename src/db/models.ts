@@ -147,6 +147,21 @@ export interface Tenant extends BaseRecord {
   lastSeenOnlineAt?: string;
   /** Telemetría en vivo: información del dispositivo/navegador que registró actividad en línea. */
   lastSeenDevice?: string;
+  /** Información del abono vigente con vigencia de 15 días para completar saldo. */
+  activeAbono?: TenantAbonoInfo;
+}
+
+export interface TenantAbonoInfo {
+  abonoId: string;
+  installmentId?: string;
+  concept: string;
+  amountPaid: number;
+  remainingAmount: number;
+  totalDue: number;
+  abonoDate: string;
+  graceUntil: string;
+  active: boolean;
+  notes?: string;
 }
 
 export interface UserAccount extends BaseRecord {
@@ -168,6 +183,12 @@ export interface PlanInstallment {
   concept: string;
   status: PlanInstallmentStatus;
   paidAt?: string;
+  /** Monto acumulado abonado a esta cuota. */
+  paidAmount?: number;
+  /** Marca temporal ISO del último abono registrado. */
+  lastAbonoAt?: string;
+  /** Fecha límite de vigencia de 15 días concedida tras el abono. */
+  graceUntil?: string;
 }
 
 /** Modo de pago de la licencia de la app. */

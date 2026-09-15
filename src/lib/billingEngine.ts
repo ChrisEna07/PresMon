@@ -84,18 +84,23 @@ export function computeMonthlyInvoice(
 
   // Cuotas de la app:
   // Consideramos pendientes aquellas cuotas que ya vencieron (dueDate < today)
-  // o que vencen dentro del horizonte del mes/ciclo (dueDate <= today + 7 días).
+  // o que vencen dentro del horizonte del mes/ciclo (dueDate <= today + 7 días)
+  // y que aún tengan saldo pendiente por pagar (amount - paidAmount > 0).
   const horizon = addDaysStr(today, 7);
   const allInstallments = plan.installments ?? [];
   const relevantPendings = allInstallments
-    .filter((inst) => inst.status === 'PENDING' && inst.dueDate <= horizon)
+    .filter((inst) => {
+      if (inst.status !== 'PENDING') return false;
+      const remaining = Math.max(0, (Number(inst.amount) || 0) - (Number(inst.paidAmount) || 0));
+      return remaining > 0 && inst.dueDate <= horizon;
+    })
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
 
   result.pendingInstallments = relevantPendings;
-  result.installmentsAmount = relevantPendings.reduce(
-    (sum, inst) => sum + (Number(inst.amount) || 0),
-    0,
-  );
+  result.installmentsAmount = relevantPendings.reduce((sum, inst) => {
+    const remaining = Math.max(0, (Number(inst.amount) || 0) - (Number(inst.paidAmount) || 0));
+    return sum + remaining;
+  }, 0);
 
   // Componente Cloud exigible en la factura mensual:
   const cloudCharge = cloudIsDue ? cloudFee : 0;
@@ -112,7 +117,8 @@ export function computeMonthlyInvoice(
 
   for (const inst of relevantPendings) {
     if (inst.dueDate < today) {
-      overdueAmount += Number(inst.amount) || 0;
+      const remaining = Math.max(0, (Number(inst.amount) || 0) - (Number(inst.paidAmount) || 0));
+      overdueAmount += remaining;
       const instOverdueDays = Math.max(0, diffDays(inst.dueDate, today));
       if (instOverdueDays > maxOverdueDays) maxOverdueDays = instOverdueDays;
     }
@@ -125,9 +131,20 @@ export function computeMonthlyInvoice(
   // Resumen textual para banners y diálogos
   const parts: string[] = [];
   if (relevantPendings.length > 0) {
-    parts.push(
-      `${relevantPendings.length} cuota(s) app ($${result.installmentsAmount.toLocaleString('es-CO')})`,
-    );
+    const hasAbonos = relevantPendings.some((inst) => (Number(inst.paidAmount) || 0) > 0);
+    if (hasAbonos) {
+      const totalPaid = relevantPendings.reduce(
+        (sum, inst) => sum + (Number(inst.paidAmount) || 0),
+        0,
+      );
+      parts.push(
+        `${relevantPendings.length} cuota(s) app (Saldo por pagar $${result.installmentsAmount.toLocaleString('es-CO')} · Abonado $${totalPaid.toLocaleString('es-CO')})`,
+      );
+    } else {
+      parts.push(
+        `${relevantPendings.length} cuota(s) app ($${result.installmentsAmount.toLocaleString('es-CO')})`,
+      );
+    }
   }
   if (cloudCharge > 0) {
     parts.push(`Servicio Cloud ($${cloudCharge.toLocaleString('es-CO')})`);
