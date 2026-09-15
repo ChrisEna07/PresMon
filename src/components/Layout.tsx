@@ -224,12 +224,13 @@ export default function Layout() {
     session?.role === 'TENANT_ADMIN' &&
     (tenantRecord?.appLocked === true || isAutoLockedForMora || (isAbonoGraceExpired && !unlockedByAdmin));
 
-  function handleOpenReportModal(customAmount?: number) {
+  function handleOpenReportModal(customAmount?: number | unknown) {
     const defaultAmount =
-      customAmount ??
-      (tenantRecord?.activeAbono?.active && tenantRecord.activeAbono.remainingAmount > 0
-        ? tenantRecord.activeAbono.remainingAmount
-        : monthlyInvoice.totalInvoiceAmount);
+      typeof customAmount === 'number'
+        ? customAmount
+        : (tenantRecord?.activeAbono?.active && tenantRecord.activeAbono.remainingAmount > 0
+          ? tenantRecord.activeAbono.remainingAmount
+          : monthlyInvoice.totalInvoiceAmount);
     setReportAmount(defaultAmount);
     setReportDate(todayStr());
     const activeBanks = (tenantRecord?.bankAccounts || []).filter((b) => b.active);
@@ -877,7 +878,7 @@ export default function Layout() {
 
               <div className="mt-5 space-y-2">
                 <button
-                  onClick={handleOpenReportModal}
+                  onClick={() => handleOpenReportModal()}
                   className="w-full cursor-pointer rounded-xl bg-emerald-600 px-4 py-2.5 font-bold text-white transition-colors hover:bg-emerald-500 flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/30 text-xs sm:text-sm"
                 >
                   <Upload size={16} /> Reportar Comprobante de Pago

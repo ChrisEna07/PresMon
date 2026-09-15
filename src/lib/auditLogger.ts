@@ -49,6 +49,7 @@ export const ACTION_LABELS: Record<AuditAction, string> = {
   TENANT_UPDATED: 'Organización actualizada',
   TENANT_DELETED: 'Organización eliminada',
   PLAN_UPDATED: 'Plan de servicio actualizado',
+  PLAN_INSTALLMENT_ABONO: 'Abono a cuota registrado',
   DATA_EXPORTED: 'Respaldo exportado',
   SYNC_COMPLETED: 'Sincronización completada',
   SYNC_CONFLICT: 'Conflicto resuelto por sincronización',
@@ -56,6 +57,7 @@ export const ACTION_LABELS: Record<AuditAction, string> = {
   OFFLINE_ONLINE_DETECTED: 'Edición offline detectada con internet',
   PAYMENT_REPORT_CREATED: 'Comprobante de pago reportado',
   PAYMENT_REPORT_APPROVED: 'Comprobante de pago aprobado',
+  PAYMENT_REPORT_APPROVED_AS_ABONO: 'Comprobante aprobado como abono (15d)',
   PAYMENT_REPORT_REJECTED: 'Comprobante de pago rechazado',
 };
 
