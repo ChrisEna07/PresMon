@@ -26,6 +26,7 @@ export async function reportOnlineHeartbeat(tenantId: string): Promise<void> {
   const payload: Partial<Tenant> = {
     lastSeenOnlineAt: now,
     lastSeenDevice: device,
+    updatedAt: now,
   };
   if (isOffline) {
     payload.offlineOnlineDetected = true;

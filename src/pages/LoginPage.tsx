@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { CloudOff, LogIn, RefreshCw, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, CloudOff, LogIn, RefreshCw, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../store/auth';
 import { db } from '../db/db';
 import { Button } from '../components/ui/button';
@@ -20,7 +20,18 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [boot, setBoot] = useState<BootState>('checking');
+  const [concurrentAlert, setConcurrentAlert] = useState(false);
   const cloudMode = isSyncConfigured();
+
+  useEffect(() => {
+    try {
+      if (localStorage.getItem('presmon_logout_reason') === 'CONCURRENT_DEVICE') {
+        setConcurrentAlert(true);
+      }
+    } catch {
+      /* noop */
+    }
+  }, []);
 
   const bootstrap = useCallback(async () => {
     setBoot('syncing');
@@ -105,6 +116,23 @@ export default function LoginPage() {
                 >
                   Reintentar
                 </button>
+              </div>
+            )}
+            {concurrentAlert && (
+              <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-3.5 text-xs text-amber-900 shadow-sm leading-relaxed">
+                <p className="font-bold flex items-center gap-1.5 text-amber-800 text-sm">
+                  <AlertTriangle size={16} className="text-amber-600 shrink-0" />
+                  Sesión finalizada en este dispositivo
+                </p>
+                <p className="mt-1.5 text-[11px] text-amber-950">
+                  Tu organización ha iniciado sesión en otro dispositivo. Tu plan actual está limitado a <strong>1 sola sesión activa</strong> simultánea para proteger tus credenciales.
+                </p>
+                <div className="mt-2 rounded-lg bg-white/90 p-2.5 border border-amber-200 text-[11px]">
+                  💡 <strong>¿Necesitas que tus cobradores o empleados operen al mismo tiempo?</strong>
+                  <p className="mt-1 text-slate-700">
+                    Adquiere el servicio adicional de <strong>Módulo Socio (Cobradores)</strong> o amplía tu plan con <strong>ChrizDev</strong> al WhatsApp <strong>3183517802</strong>.
+                  </p>
+                </div>
               </div>
             )}
             <form onSubmit={handleSubmit} className="space-y-4">

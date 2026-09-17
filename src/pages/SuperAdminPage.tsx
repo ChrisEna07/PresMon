@@ -22,12 +22,17 @@ import {
   Link2,
   Lock,
   LockOpen,
+  LogOut,
   Megaphone,
+  MessageCircle,
   Pencil,
   Phone,
   Plus,
   ShieldCheck,
+  Smartphone,
   Trash2,
+  UserX,
+  Users,
   XCircle,
 } from 'lucide-react';
 import type {
@@ -37,7 +42,9 @@ import type {
   PaymentReportStatus,
   PlanInstallment,
   ServicePlan,
+  SingleUseSocioToken,
   Tenant,
+  UserAccount,
 } from '../db/models';
 import { db, deleteTenantCascade, saveTenant, saveUser, wipeLocalTenantData } from '../db/db';
 import { useAuth } from '../store/auth';
@@ -85,9 +92,38 @@ export default function SuperAdminPage() {
     () => db.tenants.where('status').notEqual('DELETED').toArray(),
     [],
   );
-  const users = useLiveQuery(() => db.users.where('role').equals('TENANT_ADMIN').toArray(), []);
+  const allUsers = useLiveQuery(() => db.users.toArray(), []);
+  const users = useMemo(
+    () => (allUsers ?? []).filter((u) => u.role === 'TENANT_ADMIN' || u.role === 'ADMIN'),
+    [allUsers],
+  );
+  const auditLogs = useLiveQuery(() => db.audit_logs.toArray(), []);
   const loans = useLiveQuery(() => db.loans.toArray(), []);
   const plans = useLiveQuery(() => db.plans.toArray(), []);
+
+  const latestAuditByTenant = useMemo(() => {
+    const map = new Map<string, string>();
+    (auditLogs ?? []).forEach((l) => {
+      if (!l.tenantId) return;
+      const prev = map.get(l.tenantId);
+      if (!prev || l.timestamp > prev) {
+        map.set(l.tenantId, l.timestamp);
+      }
+    });
+    return map;
+  }, [auditLogs]);
+
+  const adminsByTenant = useMemo(() => {
+    const map = new Map<string, UserAccount[]>();
+    (allUsers ?? []).forEach((u) => {
+      if (u.role === 'TENANT_ADMIN' || u.role === 'ADMIN') {
+        const list = map.get(u.tenantId) ?? [];
+        list.push(u);
+        map.set(u.tenantId, list);
+      }
+    });
+    return map;
+  }, [allUsers]);
 
   const planByTenant = useMemo(() => {
     const map = new Map<string, ServicePlan>();
@@ -98,6 +134,18 @@ export default function SuperAdminPage() {
   const [wipeTarget, setWipeTarget] = useState<Tenant | null>(null);
   const [wiping, setWiping] = useState(false);
   const [wipeLockOrg, setWipeLockOrg] = useState(false);
+
+  // Estados para Administrar Administradores y Sesiones
+  const [adminManageTarget, setAdminManageTarget] = useState<Tenant | null>(null);
+  const [adminPolicyMax, setAdminPolicyMax] = useState<number>(1);
+  const [adminPolicyMultiSession, setAdminPolicyMultiSession] = useState<boolean>(false);
+
+  // Estados para Módulo Socio y Tokens de Único Uso
+  const [socioLinkTarget, setSocioLinkTarget] = useState<Tenant | null>(null);
+  const [generatedSocioLink, setGeneratedSocioLink] = useState<string | null>(null);
+
+  // Estado de carga para switches
+  const [togglingTenantId, setTogglingTenantId] = useState<string | null>(null);
 
   const stats = useMemo(
     () => ({
@@ -174,19 +222,23 @@ export default function SuperAdminPage() {
     tooltip: string;
     isLive: boolean;
   } {
-    const seenAt = t.lastSeenOnlineAt || t.offlineOnlineDetectedAt;
+    const auditTime = latestAuditByTenant.get(t.tenantId);
+    const candidates = [t.lastSeenOnlineAt, t.offlineOnlineDetectedAt, auditTime].filter(Boolean) as string[];
+    candidates.sort();
+    const seenAt = candidates.pop();
+
     if (!seenAt) {
       return {
         badgeVariant: 'muted',
         text: 'Sin registro',
-        tooltip: 'Esta organización no ha registrado conexiones online todavía.',
+        tooltip: 'Esta organización no ha registrado conexiones online ni actividad en auditoría todavía.',
         isLive: false,
       };
     }
 
     const elapsedMs = Date.now() - new Date(seenAt).getTime();
     const elapsedMins = Math.max(0, elapsedMs / 60000);
-    const device = t.lastSeenDevice || t.offlineDeviceInfo || 'Navegador Web';
+    const device = t.lastSeenDevice || t.offlineDeviceInfo || (auditTime === seenAt ? 'Registro en Auditoría' : 'Navegador Web');
 
     if (elapsedMins <= 4) {
       if (t.offlineLicense || t.offlineOnlineDetected) {
@@ -485,30 +537,35 @@ export default function SuperAdminPage() {
   }
 
   async function toggleRemoteControl(tenant: Tenant) {
-    if (!session) return;
-    const next = tenant.remoteControlEnabled !== false;
-    await saveTenant({
-      ...tenant,
-      remoteControlEnabled: !next,
-      updatedAt: new Date().toISOString(),
-      syncStatus: 'PENDING',
-    });
-    await logAudit({
-      tenantId: '',
-      action: 'TENANT_UPDATED',
-      actorId: session.userId,
-      actorName: session.displayName,
-      entityId: tenant.tenantId,
-      entityType: 'tenants',
-      payloadSnapshot: { campo: 'remoteControlEnabled', valor: !next },
-    });
-    toast(
-      next
-        ? `Control de cuenta DESACTIVADO para «${tenant.name}». Ya no recibirán bloqueos, avisos ni banner de pago.`
-        : `Control de cuenta ACTIVADO para «${tenant.name}».`,
-      next ? 'warning' : 'success',
-    );
-    pushToCloud();
+    if (!session || togglingTenantId) return;
+    setTogglingTenantId(tenant.tenantId);
+    try {
+      const next = tenant.remoteControlEnabled !== false;
+      await saveTenant({
+        ...tenant,
+        remoteControlEnabled: !next,
+        updatedAt: new Date().toISOString(),
+        syncStatus: 'PENDING',
+      });
+      await logAudit({
+        tenantId: '',
+        action: 'TENANT_UPDATED',
+        actorId: session.userId,
+        actorName: session.displayName,
+        entityId: tenant.tenantId,
+        entityType: 'tenants',
+        payloadSnapshot: { campo: 'remoteControlEnabled', valor: !next },
+      });
+      toast(
+        next
+          ? `Control de cuenta DESACTIVADO para «${tenant.name}». Ya no recibirán bloqueos, avisos ni banner de pago.`
+          : `Control de cuenta ACTIVADO para «${tenant.name}».`,
+        next ? 'warning' : 'success',
+      );
+      pushToCloud();
+    } finally {
+      setTogglingTenantId(null);
+    }
   }
 
   async function setAppLock(tenant: Tenant, locked: boolean) {
@@ -1046,42 +1103,199 @@ export default function SuperAdminPage() {
   }
 
   async function toggleStatus(tenant: Tenant) {
-    if (!session) return;
-    const next = tenant.status === 'ACTIVE' ? 'SUSPENDED' : 'ACTIVE';
-    await saveTenant({ ...tenant, status: next });
-    await logAudit({
-      tenantId: '',
-      action: 'TENANT_UPDATED',
-      actorId: session.userId,
-      actorName: session.displayName,
-      entityId: tenant.tenantId,
-      entityType: 'tenants',
-      payloadSnapshot: { campo: 'status', valor: next },
-    });
-    toast(next === 'ACTIVE' ? 'Organización activada.' : 'Organización suspendida.', 'success');
-    pushToCloud();
+    if (!session || togglingTenantId) return;
+    setTogglingTenantId(tenant.tenantId);
+    try {
+      const next = tenant.status === 'ACTIVE' ? 'SUSPENDED' : 'ACTIVE';
+      await saveTenant({
+        ...tenant,
+        status: next,
+        updatedAt: new Date().toISOString(),
+        syncStatus: 'PENDING',
+      });
+      await logAudit({
+        tenantId: '',
+        action: 'TENANT_UPDATED',
+        actorId: session.userId,
+        actorName: session.displayName,
+        entityId: tenant.tenantId,
+        entityType: 'tenants',
+        payloadSnapshot: { campo: 'status', valor: next },
+      });
+      toast(next === 'ACTIVE' ? 'Organización activada.' : 'Organización suspendida.', 'success');
+      pushToCloud();
+    } finally {
+      setTogglingTenantId(null);
+    }
   }
 
   async function togglePortal(tenant: Tenant) {
+    if (!session || togglingTenantId) return;
+    setTogglingTenantId(tenant.tenantId);
+    try {
+      const next = !tenant.clientPortalEnabled;
+      await saveTenant({
+        ...tenant,
+        clientPortalEnabled: next,
+        updatedAt: new Date().toISOString(),
+        syncStatus: 'PENDING',
+      });
+      await logAudit({
+        tenantId: '',
+        action: 'TENANT_UPDATED',
+        actorId: session.userId,
+        actorName: session.displayName,
+        entityId: tenant.tenantId,
+        entityType: 'tenants',
+        payloadSnapshot: { campo: 'clientPortalEnabled', valor: next },
+      });
+      toast(
+        next
+          ? 'Portal de clientes HABILITADO. Usa el botón «Enlace» para compartirlo con los clientes.'
+          : 'Portal de clientes deshabilitado.',
+        'success',
+      );
+      pushToCloud();
+    } finally {
+      setTogglingTenantId(null);
+    }
+  }
+
+  async function handleDisconnectSession(tenant: Tenant) {
     if (!session) return;
-    const next = !tenant.clientPortalEnabled;
-    await saveTenant({ ...tenant, clientPortalEnabled: next });
+    const prevDevice = tenant.currentDeviceName || tenant.currentDeviceId || 'Desconocido';
+    const updated: Tenant = {
+      ...tenant,
+      currentSessionId: crypto.randomUUID(), // Invalida el session ID anterior
+      currentDeviceId: undefined,
+      currentDeviceName: undefined,
+      sessionStartedAt: undefined,
+      updatedAt: new Date().toISOString(),
+      syncStatus: 'PENDING',
+    };
+    await saveTenant(updated);
     await logAudit({
-      tenantId: '',
-      action: 'TENANT_UPDATED',
+      tenantId: tenant.tenantId,
+      action: 'SESSION_KILLED_CONCURRENT',
       actorId: session.userId,
       actorName: session.displayName,
       entityId: tenant.tenantId,
       entityType: 'tenants',
-      payloadSnapshot: { campo: 'clientPortalEnabled', valor: next },
+      payloadSnapshot: {
+        razon: 'Desconexión manual forzada por Super Administrador',
+        dispositivoAnterior: prevDevice,
+      },
     });
-    toast(
-      next
-        ? 'Portal de clientes HABILITADO. Usa el botón «Enlace» para compartirlo con los clientes.'
-        : 'Portal de clientes deshabilitado.',
-      'success',
-    );
     pushToCloud();
+    toast(`Sesión activa de «${tenant.name}» desconectada remotamente.`, 'success');
+  }
+
+  async function handleDeleteAdminUser(user: UserAccount, tenant: Tenant) {
+    if (!session) return;
+    const tenantAdmins = adminsByTenant.get(tenant.tenantId) ?? [];
+    if (tenantAdmins.length <= 1) {
+      toast('No se puede eliminar el único administrador de la organización.', 'error');
+      return;
+    }
+    if (!window.confirm(`¿Seguro que deseas eliminar al administrador «${user.username}» (${user.displayName})? Esta acción no se puede deshacer.`)) {
+      return;
+    }
+    await db.users.delete(user.userId);
+    if (isSyncConfigured()) {
+      void purgeDocsFromCloud([{ collection: 'users', ids: [user.userId] }]);
+    }
+    await logAudit({
+      tenantId: tenant.tenantId,
+      action: 'TENANT_ADMIN_LIMIT_UPDATED',
+      actorId: session.userId,
+      actorName: session.displayName,
+      entityId: user.userId,
+      entityType: 'users',
+      payloadSnapshot: {
+        accion: 'ADMIN_ELIMINADO_POR_SUPERADMIN',
+        username: user.username,
+        organizacion: tenant.name,
+      },
+    });
+    pushToCloud();
+    toast(`Administrador «${user.username}» eliminado correctamente.`, 'success');
+  }
+
+  async function handleSaveAdminPolicy(tenant: Tenant) {
+    if (!session) return;
+    const updated: Tenant = {
+      ...tenant,
+      maxAdmins: Math.max(1, Number(adminPolicyMax) || 1),
+      allowMultipleSessions: adminPolicyMultiSession,
+      updatedAt: new Date().toISOString(),
+      syncStatus: 'PENDING',
+    };
+    await saveTenant(updated);
+    await logAudit({
+      tenantId: tenant.tenantId,
+      action: 'TENANT_ADMIN_LIMIT_UPDATED',
+      actorId: session.userId,
+      actorName: session.displayName,
+      entityId: tenant.tenantId,
+      entityType: 'tenants',
+      payloadSnapshot: {
+        maxAdmins: updated.maxAdmins,
+        allowMultipleSessions: updated.allowMultipleSessions,
+      },
+    });
+    pushToCloud();
+    toast(`Regla de administradores y sesiones guardada para «${tenant.name}».`, 'success');
+    setAdminManageTarget(null);
+  }
+
+  async function handleGenerateSocioToken(tenant: Tenant) {
+    if (!session) return;
+    const token = crypto.randomUUID();
+    const newToken: SingleUseSocioToken = {
+      token,
+      tenantId: tenant.tenantId,
+      createdAt: new Date().toISOString(),
+      used: false,
+    };
+    const currentTokens = tenant.singleUseSocioTokens || [];
+    const updated: Tenant = {
+      ...tenant,
+      socioModuleEnabled: true,
+      singleUseSocioTokens: [...currentTokens, newToken],
+      updatedAt: new Date().toISOString(),
+      syncStatus: 'PENDING',
+    };
+    await saveTenant(updated);
+    await logAudit({
+      tenantId: tenant.tenantId,
+      action: 'SOCIO_TOKEN_GENERATED',
+      actorId: session.userId,
+      actorName: session.displayName,
+      entityId: token,
+      entityType: 'tenants',
+      payloadSnapshot: {
+        token: `${token.slice(0, 8)}...`,
+        organizacion: tenant.name,
+      },
+    });
+    pushToCloud();
+    const link = `${window.location.origin}/socio?t=${tenant.tenantId}&token=${token}`;
+    setGeneratedSocioLink(link);
+    toast('Enlace de Socio generado. Recuerda que es de ÚNICO USO.', 'success');
+  }
+
+  async function handleRevokeSocioToken(tenant: Tenant, tokenStr: string) {
+    if (!session) return;
+    const updatedTokens = (tenant.singleUseSocioTokens || []).filter((t) => t.token !== tokenStr);
+    const updated: Tenant = {
+      ...tenant,
+      singleUseSocioTokens: updatedTokens,
+      updatedAt: new Date().toISOString(),
+      syncStatus: 'PENDING',
+    };
+    await saveTenant(updated);
+    pushToCloud();
+    toast('Enlace de socio revocado.', 'info');
   }
 
   async function handleResetPassword() {
@@ -1250,7 +1464,45 @@ export default function SuperAdminPage() {
                     )}
                   </div>
                 </TD>
-                <TD className="text-slate-600">{adminByTenant.get(t.tenantId) ?? '—'}</TD>
+                <TD>
+                  {(() => {
+                    const orgAdmins = adminsByTenant.get(t.tenantId) ?? [];
+                    const primary = orgAdmins[0]?.username ?? adminByTenant.get(t.tenantId) ?? '—';
+                    return (
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-slate-700 font-medium">{primary}</span>
+                        {orgAdmins.length > 1 ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAdminManageTarget(t);
+                              setAdminPolicyMax(t.maxAdmins || 1);
+                              setAdminPolicyMultiSession(t.allowMultipleSessions === true);
+                            }}
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-100 text-amber-800 text-[10px] font-bold hover:bg-amber-200 transition-colors cursor-pointer"
+                            title="Esta organización tiene múltiples administradores. Haz clic para controlar el límite o remover administradores."
+                          >
+                            <AlertTriangle size={11} className="text-amber-600 shrink-0" />
+                            {orgAdmins.length} admins ⚠️
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAdminManageTarget(t);
+                              setAdminPolicyMax(t.maxAdmins || 1);
+                              setAdminPolicyMultiSession(t.allowMultipleSessions === true);
+                            }}
+                            className="text-[10px] text-slate-400 hover:text-emerald-600 underline cursor-pointer"
+                            title="Gestionar límite de administradores y sesiones"
+                          >
+                            Gestionar
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </TD>
                 <TD>
                   {(loans ?? []).filter((l) => l.tenantId === t.tenantId).length}
                 </TD>
@@ -1279,6 +1531,7 @@ export default function SuperAdminPage() {
                     <Switch
                       checked={t.status === 'ACTIVE'}
                       onChange={() => void toggleStatus(t)}
+                      disabled={togglingTenantId === t.tenantId}
                       label="Estado"
                     />
                     <Badge variant={t.status === 'ACTIVE' ? 'success' : 'danger'}>
@@ -1291,6 +1544,7 @@ export default function SuperAdminPage() {
                     <Switch
                       checked={t.remoteControlEnabled !== false}
                       onChange={() => void toggleRemoteControl(t)}
+                      disabled={togglingTenantId === t.tenantId}
                       label="Control"
                     />
                     <Badge variant={t.remoteControlEnabled !== false ? 'success' : 'muted'}>
@@ -1304,6 +1558,7 @@ export default function SuperAdminPage() {
                     <Switch
                       checked={t.clientPortalEnabled}
                       onChange={() => void togglePortal(t)}
+                      disabled={togglingTenantId === t.tenantId}
                       label="Portal cliente"
                     />
                     <Badge variant={t.clientPortalEnabled ? 'info' : 'muted'}>
@@ -1429,7 +1684,7 @@ export default function SuperAdminPage() {
                   type="button"
                   onClick={() => {
                     setActionMenu(null);
-                    navigate('/super-plans');
+                    navigate('/super/plans');
                   }}
                   className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-emerald-50/70 transition-colors text-left text-emerald-800 font-medium cursor-pointer"
                 >
@@ -1438,7 +1693,37 @@ export default function SuperAdminPage() {
                 </button>
               </div>
 
-              {/* Grupo 2: Seguridad y Purga Offline */}
+              {/* Grupo 2: Control de Usuarios, Admins y Cobradores */}
+              <div className="py-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionMenu(null);
+                    setAdminManageTarget(t);
+                    setAdminPolicyMax(t.maxAdmins || 1);
+                    setAdminPolicyMultiSession(t.allowMultipleSessions === true);
+                  }}
+                  className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-amber-50/80 transition-colors text-left text-amber-800 font-medium cursor-pointer"
+                >
+                  <Users size={14} className="text-amber-600 shrink-0" />
+                  <span>Control de Admins y Sesiones</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionMenu(null);
+                    setSocioLinkTarget(t);
+                    setGeneratedSocioLink(null);
+                  }}
+                  className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-purple-50/80 transition-colors text-left text-purple-800 font-medium cursor-pointer"
+                >
+                  <Smartphone size={14} className="text-purple-600 shrink-0" />
+                  <span>Módulo Socio / Enlace Único</span>
+                </button>
+              </div>
+
+              {/* Grupo 3: Seguridad y Purga Offline */}
               <div className="py-1">
                 <button
                   type="button"
@@ -2775,6 +3060,284 @@ service cloud.firestore {
             </Button>
           </div>
         </div>
+      </Dialog>
+
+      {/* Modal de Control de Administradores y Sesiones */}
+      <Dialog
+        open={adminManageTarget !== null}
+        onClose={() => setAdminManageTarget(null)}
+        title={`Control de Administradores y Sesiones · ${adminManageTarget?.name ?? ''}`}
+      >
+        {adminManageTarget && (() => {
+          const orgAdmins = adminsByTenant.get(adminManageTarget.tenantId) ?? [];
+          return (
+            <div className="space-y-5">
+              {/* Sección 1: Administradores Actuales */}
+              <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                    <Users size={14} className="text-slate-500" /> Administradores Registrados ({orgAdmins.length})
+                  </h4>
+                  {orgAdmins.length > 1 && (
+                    <Badge variant="warning" className="font-bold">
+                      {orgAdmins.length} admins activos
+                    </Badge>
+                  )}
+                </div>
+                <p className="text-xs text-slate-500">
+                  Por regla de seguridad, una organización normal solo debe contar con 1 administrador titular. Si hay administradores redundantes, puedes eliminarlos aquí.
+                </p>
+
+                <div className="divide-y divide-slate-200 rounded-lg border border-slate-200 bg-white overflow-hidden">
+                  {orgAdmins.length === 0 ? (
+                    <div className="p-3 text-xs text-slate-500 text-center">No hay usuarios administradores registrados.</div>
+                  ) : (
+                    orgAdmins.map((u) => (
+                      <div key={u.userId} className="flex items-center justify-between p-2.5 text-xs">
+                        <div>
+                          <p className="font-bold text-slate-900">{u.displayName || u.username}</p>
+                          <p className="text-[11px] text-slate-500 font-mono">Usuario: @{u.username}</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {orgAdmins.length > 1 && (
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              className="h-7 text-xs gap-1"
+                              onClick={() => void handleDeleteAdminUser(u, adminManageTarget)}
+                              title="Eliminar este administrador para dejar solo 1 titular"
+                            >
+                              <Trash2 size={12} /> Eliminar
+                            </Button>
+                          )}
+                          {orgAdmins.length === 1 && (
+                            <Badge variant="success">Admin Principal</Badge>
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* Sección 2: Estado de Sesión Activa y Forzar Cierre Remoto */}
+              <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-3.5 space-y-2.5">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                  <Smartphone size={14} className="text-slate-500" /> Sesión Remota en Dispositivo
+                </h4>
+                {adminManageTarget.currentSessionId ? (
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-white rounded-lg border border-emerald-200">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                        <p className="text-xs font-bold text-slate-900">
+                          {adminManageTarget.currentDeviceName || 'Dispositivo conectado'}
+                        </p>
+                      </div>
+                      <p className="text-[11px] text-slate-500">
+                        Iniciada: {adminManageTarget.sessionStartedAt ? formatDateTime(adminManageTarget.sessionStartedAt) : 'Sesión activa'}
+                      </p>
+                    </div>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      className="gap-1.5 shrink-0"
+                      onClick={() => void handleDisconnectSession(adminManageTarget)}
+                    >
+                      <LogOut size={13} /> Forzar Desconexión Remota
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="p-3 bg-white rounded-lg border border-slate-200 text-xs text-slate-500">
+                    No hay sesión activa vinculada actualmente o el equipo está desconectado.
+                  </div>
+                )}
+              </div>
+
+              {/* Sección 3: Reglas de Límite y Concurrencia */}
+              <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-3.5 space-y-3">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                  <ShieldCheck size={14} className="text-slate-500" /> Política de Acceso de la Organización
+                </h4>
+
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <Label className="text-xs font-semibold text-slate-900">Límite máximo de administradores</Label>
+                    <p className="text-[11px] text-slate-500">Máximo número de cuentas con rol de administrador permitidas (Recomendado: 1).</p>
+                  </div>
+                  <Input
+                    type="number"
+                    min="1"
+                    max="10"
+                    value={adminPolicyMax}
+                    onChange={(e) => setAdminPolicyMax(Number(e.target.value) || 1)}
+                    className="w-20 text-center"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-4 pt-2 border-t border-slate-200">
+                  <div>
+                    <Label className="text-xs font-semibold text-slate-900">Permitir múltiples sesiones simultáneas</Label>
+                    <p className="text-[11px] text-slate-500">
+                      Si está desactivado (Recomendado), al iniciar sesión en un 2do dispositivo se cerrará la sesión anterior con advertencia de límite de plan (Módulo Socio requerido).
+                    </p>
+                  </div>
+                  <Switch
+                    checked={adminPolicyMultiSession}
+                    onChange={() => setAdminPolicyMultiSession(!adminPolicyMultiSession)}
+                    label="Multi-Sesión"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <Button variant="outline" onClick={() => setAdminManageTarget(null)}>
+                  Cerrar
+                </Button>
+                <Button onClick={() => void handleSaveAdminPolicy(adminManageTarget)}>
+                  Guardar Política
+                </Button>
+              </div>
+            </div>
+          );
+        })()}
+      </Dialog>
+
+      {/* Modal de Módulo Socio y Generación de Enlace de Único Uso */}
+      <Dialog
+        open={socioLinkTarget !== null}
+        onClose={() => {
+          setSocioLinkTarget(null);
+          setGeneratedSocioLink(null);
+        }}
+        title={`Módulo Socio (Cobrador en Ruta) · ${socioLinkTarget?.name ?? ''}`}
+      >
+        {socioLinkTarget && (() => {
+          const tokens = socioLinkTarget.singleUseSocioTokens || [];
+          return (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-purple-200 bg-purple-50/50 p-3.5 space-y-2">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 rounded-lg bg-purple-100 text-purple-700">
+                    <Smartphone size={18} />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-purple-900">Enlace de Acceso Exclusivo y Único Uso</h4>
+                    <p className="text-[11px] text-purple-700">
+                      Permite al cobrador registrar abonos en calle sin ver métricas financieras.
+                    </p>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  Por seguridad estricta, cada enlace es de <strong>ÚNICO USO</strong>. Una vez que el socio abre el enlace en su celular, queda permanentemente vinculado a ese dispositivo y el token queda quemado; nadie más puede replicarlo ni abrirlo.
+                </p>
+                <div className="pt-1">
+                  <Button
+                    onClick={() => void handleGenerateSocioToken(socioLinkTarget)}
+                    className="w-full bg-purple-700 hover:bg-purple-600 text-white font-medium text-xs gap-1.5"
+                  >
+                    <Plus size={14} /> Generar Nuevo Enlace de Socio
+                  </Button>
+                </div>
+              </div>
+
+              {generatedSocioLink && (
+                <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-3.5 space-y-2.5 animate-in fade-in duration-200">
+                  <div className="flex items-center gap-1.5 text-emerald-800 font-bold text-xs">
+                    <CheckCircle size={14} className="text-emerald-600" /> ¡Enlace generado con éxito!
+                  </div>
+                  <Input
+                    readOnly
+                    value={generatedSocioLink}
+                    className="bg-white font-mono text-xs select-all text-slate-800"
+                  />
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="gap-1.5 text-xs bg-white hover:bg-slate-50"
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(generatedSocioLink);
+                          toast('Enlace copiado al portapapeles', 'success');
+                        } catch {
+                          toast('No se pudo copiar automáticamente', 'error');
+                        }
+                      }}
+                    >
+                      <Copy size={13} /> Copiar Enlace
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white"
+                      onClick={() => {
+                        const msg = `Hola, este es tu enlace exclusivo para la ruta de cobros de ${socioLinkTarget.name}: ${generatedSocioLink}\n\n⚠️ Importante: Este enlace es de ÚNICO USO por seguridad. Al abrirlo quedará vinculado a tu dispositivo móvil y no se podrá volver a abrir ni compartir.`;
+                        openWhatsApp('', msg);
+                      }}
+                    >
+                      <MessageCircle size={13} /> Enviar por WhatsApp
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {/* Historial de Tokens */}
+              <div className="space-y-2">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700">
+                  Historial de Tokens Emitidos ({tokens.length})
+                </h4>
+                <div className="divide-y divide-slate-200 rounded-lg border border-slate-200 bg-white max-h-48 overflow-y-auto">
+                  {tokens.length === 0 ? (
+                    <div className="p-3 text-xs text-slate-400 text-center">No hay enlaces de socio emitidos todavía.</div>
+                  ) : (
+                    [...tokens].reverse().map((tok) => (
+                      <div key={tok.token} className="flex items-center justify-between p-2.5 text-xs">
+                        <div>
+                          <p className="font-mono text-[11px] text-slate-700 font-semibold">
+                            token_...{tok.token.slice(0, 8)}
+                          </p>
+                          <p className="text-[10px] text-slate-400">
+                            Creado: {formatDateTime(tok.createdAt)}
+                          </p>
+                          {tok.used && (
+                            <p className="text-[10px] text-emerald-600">
+                              Canjeado: {tok.usedAt ? formatDateTime(tok.usedAt) : 'Sí'} ({tok.usedByDevice || 'Dispositivo'})
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Badge variant={tok.used ? 'success' : 'warning'}>
+                            {tok.used ? 'Canjeado' : 'Activo (Sin usar)'}
+                          </Badge>
+                          <button
+                            type="button"
+                            onClick={() => void handleRevokeSocioToken(socioLinkTarget, tok.token)}
+                            className="text-slate-400 hover:text-red-500 p-1 cursor-pointer"
+                            title="Revocar token"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="flex justify-end pt-2">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setSocioLinkTarget(null);
+                    setGeneratedSocioLink(null);
+                  }}
+                >
+                  Cerrar
+                </Button>
+              </div>
+            </div>
+          );
+        })()}
       </Dialog>
     </div>
   );

@@ -1,6 +1,6 @@
 export type SyncStatus = 'SYNCED' | 'PENDING' | 'CONFLICT';
 export type TenantStatus = 'ACTIVE' | 'SUSPENDED' | 'DELETED';
-export type UserRole = 'SUPER_ADMIN' | 'TENANT_ADMIN';
+export type UserRole = 'SUPER_ADMIN' | 'TENANT_ADMIN' | 'SOCIO';
 export type DocumentType = 'CC' | 'CE' | 'TI' | 'NIT' | 'PAS';
 export type RiskBadge = 'A' | 'B' | 'C' | 'D';
 export type Frequency = 'DAILY' | 'WEEKLY' | 'BIWEEKLY' | 'MONTHLY';
@@ -34,7 +34,12 @@ export type AuditAction =
   | 'PAYMENT_REPORT_CREATED'
   | 'PAYMENT_REPORT_APPROVED'
   | 'PAYMENT_REPORT_APPROVED_AS_ABONO'
-  | 'PAYMENT_REPORT_REJECTED';
+  | 'PAYMENT_REPORT_REJECTED'
+  | 'SOCIO_PAYMENT_APPLIED'
+  | 'SOCIO_TOKEN_GENERATED'
+  | 'SOCIO_TOKEN_REDEEMED'
+  | 'SESSION_KILLED_CONCURRENT'
+  | 'TENANT_ADMIN_LIMIT_UPDATED';
 
 export interface BaseRecord {
   createdAt: string;
@@ -96,6 +101,18 @@ export interface OfflineLicenseInfo {
   issuedByName: string;
 }
 
+export interface SingleUseSocioToken {
+  id: string;
+  token: string;
+  createdAt: string;
+  expiresAt?: string;
+  used: boolean;
+  usedAt?: string;
+  usedByDevice?: string;
+  socioName?: string;
+  active: boolean;
+}
+
 export interface Tenant extends BaseRecord {
   tenantId: string;
   name: string;
@@ -151,6 +168,24 @@ export interface Tenant extends BaseRecord {
   lastSeenDevice?: string;
   /** Información del abono vigente con vigencia de 15 días para completar saldo. */
   activeAbono?: TenantAbonoInfo;
+  /** Máxima cantidad de administradores permitidos para esta organización (default 1). */
+  maxAdmins?: number;
+  /** Si es true, permite múltiples sesiones en varios dispositivos. Si es false (default), solo 1 sesión activa a la vez. */
+  allowMultipleSessions?: boolean;
+  /** ID de la sesión autorizada activa actual. */
+  currentSessionId?: string;
+  /** Identificador del dispositivo autorizado activo actual. */
+  currentDeviceId?: string;
+  /** Información o nombre del dispositivo autorizado activo. */
+  currentDeviceName?: string;
+  /** Marca temporal del inicio de la sesión activa. */
+  sessionStartedAt?: string;
+  /** Beneficio activable por SuperAdmin: acceso al módulo de auditoría de eventos. */
+  auditModuleEnabled?: boolean;
+  /** Beneficio activable por SuperAdmin/Org: acceso al módulo de Socio (cobradores de campo). */
+  socioModuleEnabled?: boolean;
+  /** Enlaces/tokens de un solo uso generados para el acceso del socio. */
+  singleUseSocioTokens?: SingleUseSocioToken[];
 }
 
 export interface TenantAbonoInfo {
@@ -196,6 +231,15 @@ export interface PlanInstallment {
 /** Modo de pago de la licencia de la app. */
 export type AppPaymentMode = 'FULL' | 'INSTALLMENTS';
 
+export interface PlanServiceItem {
+  id: string;
+  name: string;
+  category: 'CORE' | 'ADDON';
+  cost: number;
+  included: boolean;
+  description: string;
+}
+
 export interface ServicePlan extends BaseRecord {
   planId: string;
   tenantId: string;
@@ -213,6 +257,8 @@ export interface ServicePlan extends BaseRecord {
   cloudPaidThrough?: string;
   notes?: string;
   installments: PlanInstallment[];
+  /** Catálogo de servicios base y add-ons seleccionados con su costo individual. */
+  services?: PlanServiceItem[];
 }
 
 export interface Borrower extends BaseRecord {

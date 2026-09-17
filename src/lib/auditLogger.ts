@@ -28,6 +28,21 @@ export async function logAudit(entry: {
     syncStatus: 'PENDING',
   };
   await db.audit_logs.put(log);
+
+  // Mantiene sincronizado el registro en línea del tenant para evitar discrepancias con auditoría
+  if (entry.tenantId) {
+    try {
+      const t = await db.tenants.get(entry.tenantId);
+      if (t) {
+        await db.tenants.update(entry.tenantId, {
+          lastSeenOnlineAt: now,
+          updatedAt: now,
+        });
+      }
+    } catch {
+      /* noop */
+    }
+  }
 }
 
 export const ACTION_LABELS: Record<AuditAction, string> = {
@@ -59,6 +74,11 @@ export const ACTION_LABELS: Record<AuditAction, string> = {
   PAYMENT_REPORT_APPROVED: 'Comprobante de pago aprobado',
   PAYMENT_REPORT_APPROVED_AS_ABONO: 'Comprobante aprobado como abono (15d)',
   PAYMENT_REPORT_REJECTED: 'Comprobante de pago rechazado',
+  SOCIO_PAYMENT_APPLIED: 'Pago cobrado por Socio en ruta',
+  SOCIO_TOKEN_GENERATED: 'Enlace de acceso a Socio generado',
+  SOCIO_TOKEN_REDEEMED: 'Enlace de Socio vinculado a dispositivo',
+  SESSION_KILLED_CONCURRENT: 'Sesión anterior cerrada por inicio concurrente',
+  TENANT_ADMIN_LIMIT_UPDATED: 'Límite de administradores actualizado',
 };
 
 export const AUDIT_FILTERS: Array<{ key: string; label: string; actions: AuditAction[] }> = [

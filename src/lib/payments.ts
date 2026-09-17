@@ -1,4 +1,4 @@
-import type { Installment, Loan } from '../db/models';
+import type { AuditAction, Installment, Loan } from '../db/models';
 import { db, stamp, nowISO } from '../db/db';
 import { logAudit } from './auditLogger';
 import { riskBadgeFromScore, round2 } from './financialCalculations';
@@ -26,6 +26,8 @@ export async function applyPaymentToLoan(
   loanId: string,
   amount: number,
   actor: { id: string; name: string },
+  actionOverride?: AuditAction,
+  extraPayload?: Record<string, unknown>,
 ): Promise<PaymentResult> {
   const value = round2(Math.max(0, amount));
   if (value <= 0) throw new Error('El valor del abono debe ser mayor a cero.');
@@ -86,7 +88,7 @@ export async function applyPaymentToLoan(
   if (applied > 0) {
     await logAudit({
       tenantId: tenantIdOfLoan,
-      action: 'PAYMENT_APPLIED',
+      action: actionOverride ?? 'PAYMENT_APPLIED',
       actorId: actor.id,
       actorName: actor.name,
       entityId: loanId,
@@ -94,6 +96,7 @@ export async function applyPaymentToLoan(
       payloadSnapshot: {
         montoAplicado: applied,
         prestamoPagadoCompleto: loanFullyPaid,
+        ...(extraPayload ?? {}),
       },
     });
   }

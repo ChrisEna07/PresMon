@@ -30,6 +30,7 @@ import {
   Smartphone,
   Sparkles,
   Upload,
+  UserCheck,
   Users,
   Wallet,
   Wifi,
@@ -342,8 +343,6 @@ export default function Layout() {
   async function pollRemoteControl(): Promise<void> {
     if (!session || session.role !== 'TENANT_ADMIN' || !session.tenantId) return;
     if (!isSyncConfigured()) return;
-    const local = await db.tenants.get(session.tenantId);
-    if (local?.remoteControlEnabled === false) return;
     const remote = await fetchRemoteTenant(session.tenantId);
     if (!remote || !remote.found || !remote.data) return;
     if (remote.status === 'DELETED') return; // el guardia de sesión ya lo maneja
@@ -450,6 +449,15 @@ export default function Layout() {
       navigate('/login', { replace: true });
       return false;
     }
+    if (result === 'concurrent-logout') {
+      logout();
+      toast(
+        'Sesión finalizada: Se inició sesión en otro dispositivo. Tu plan actual solo permite 1 dispositivo simultáneo. Para operar en paralelo, adquiere el módulo Socio o actualiza tu plan.',
+        'warning',
+      );
+      navigate('/login', { replace: true });
+      return false;
+    }
     if (session?.tenantId && online) {
       void reportOnlineHeartbeat(session.tenantId);
     }
@@ -502,32 +510,55 @@ export default function Layout() {
     [session?.role],
   );
 
-  const navItems: Array<{
+  let navItems: Array<{
     to: string;
     label: string;
     icon: any;
     end?: boolean;
     badge?: number;
-  }> = [
-    { to: '/', label: 'Inicio', icon: LayoutDashboard, end: true },
-    { to: '/borrowers', label: 'Prestatarios', icon: Users },
-    { to: '/loans', label: 'Préstamos', icon: HandCoins },
-    { to: '/requests', label: 'Solicitudes', icon: ClipboardList },
-    { to: '/collections', label: 'Cobros', icon: CalendarClock },
-    { to: '/simulator', label: 'Simulador', icon: Calculator },
-    { to: '/audit', label: 'Auditoría', icon: ScrollText },
-    { to: '/settings', label: 'Ajustes', icon: Settings },
-  ];
+  }> = [];
+
   if (session?.role === 'SUPER_ADMIN') {
-    navItems.push({ to: '/super-admin', label: 'Organizaciones', icon: ShieldCheck, end: true });
-    navItems.push({ to: '/super/plans', label: 'Planes de Cobro', icon: Wallet });
-    navItems.push({ to: '/super-admin?tab=banners', label: 'Banners y Avisos', icon: Megaphone });
-    navItems.push({
-      to: '/super-admin?tab=reports',
-      label: 'Comprobantes',
-      icon: CreditCard,
-      badge: (pendingReportsGlobalCount ?? 0) > 0 ? (pendingReportsGlobalCount ?? 0) : undefined,
-    });
+    navItems = [
+      { to: '/super-admin', label: 'Organizaciones', icon: ShieldCheck, end: true },
+      { to: '/super/plans', label: 'Planes y Facturas', icon: Wallet },
+      { to: '/super-admin?tab=banners', label: 'Banners y Avisos', icon: Megaphone },
+      {
+        to: '/super-admin?tab=reports',
+        label: 'Comprobantes',
+        icon: CreditCard,
+        badge: (pendingReportsGlobalCount ?? 0) > 0 ? (pendingReportsGlobalCount ?? 0) : undefined,
+      },
+      { to: '/audit', label: 'Auditoría Global', icon: ScrollText },
+      { to: '/settings', label: 'Ajustes', icon: Settings },
+    ];
+  } else if (session?.role === 'SOCIO') {
+    navItems = [
+      { to: '/socio', label: 'Ruta de Cobro', icon: Smartphone, end: true },
+      { to: '/settings', label: 'Ajustes', icon: Settings },
+    ];
+  } else {
+    // Administrador u operador de la Organización
+    navItems = [
+      { to: '/', label: 'Inicio', icon: LayoutDashboard, end: true },
+      { to: '/borrowers', label: 'Prestatarios', icon: Users },
+      { to: '/loans', label: 'Préstamos', icon: HandCoins },
+      { to: '/requests', label: 'Solicitudes', icon: ClipboardList },
+      { to: '/collections', label: 'Cobros', icon: CalendarClock },
+      { to: '/simulator', label: 'Simulador', icon: Calculator },
+    ];
+
+    // Módulo de Auditoría (Beneficio configurable por Super Admin)
+    if (tenantRecord?.auditModuleEnabled === true) {
+      navItems.push({ to: '/audit', label: 'Auditoría', icon: ScrollText });
+    }
+
+    // Módulo Socio (Si está habilitado en el plan de la organización)
+    if (tenantRecord?.socioModuleEnabled === true) {
+      navItems.push({ to: '/socio', label: 'Módulo Socio', icon: Smartphone });
+    }
+
+    navItems.push({ to: '/settings', label: 'Ajustes', icon: Settings });
   }
 
   return (

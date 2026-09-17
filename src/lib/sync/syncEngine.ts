@@ -145,6 +145,24 @@ export async function runSync(tenantId?: string): Promise<SyncResult> {
           continue;
         }
 
+        // Telemetría y sesiones concurrentes de organizaciones siempre adoptan la verdad remota más reciente
+        if (name === 'tenants' && local && remote) {
+          const remoteSeen = String(remote.lastSeenOnlineAt ?? remote.offlineOnlineDetectedAt ?? '');
+          const localSeen = String(local.lastSeenOnlineAt ?? local.offlineOnlineDetectedAt ?? '');
+          if (remoteSeen > localSeen) {
+            local.lastSeenOnlineAt = remote.lastSeenOnlineAt ?? local.lastSeenOnlineAt;
+            local.lastSeenDevice = remote.lastSeenDevice ?? local.lastSeenDevice;
+            local.offlineOnlineDetected = remote.offlineOnlineDetected ?? local.offlineOnlineDetected;
+            local.offlineOnlineDetectedAt = remote.offlineOnlineDetectedAt ?? local.offlineOnlineDetectedAt;
+          }
+          if (remote.currentSessionId) {
+            local.currentSessionId = remote.currentSessionId;
+            local.currentDeviceId = remote.currentDeviceId ?? local.currentDeviceId;
+            local.currentDeviceName = remote.currentDeviceName ?? local.currentDeviceName;
+            local.sessionStartedAt = remote.sessionStartedAt ?? local.sessionStartedAt;
+          }
+        }
+
         if (!local) {
           await table.put({ ...remote, syncStatus: 'SYNCED' });
           result.pulled += 1;

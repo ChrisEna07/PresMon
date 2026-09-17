@@ -8,6 +8,7 @@ import {
   HandCoins,
   Loader2,
   Lock,
+  MessageCircle,
   RefreshCw,
   ScrollText,
   ShieldCheck,
@@ -68,6 +69,10 @@ export default function AuditPage() {
   }
 
   const tenantsList = useLiveQuery(async () => db.tenants.toArray() as Promise<Tenant[]>, []);
+  const currentTenant = useLiveQuery(
+    () => (!isSuper && session?.tenantId ? db.tenants.get(session.tenantId) : Promise.resolve(undefined)),
+    [isSuper, session?.tenantId],
+  );
   const tenantNameById = useMemo(() => {
     const map = new Map<string, string>();
     (tenantsList ?? []).forEach((t) => map.set(t.tenantId, t.name));
@@ -166,6 +171,28 @@ export default function AuditPage() {
     } catch {
       toast('No se pudo cifrar el respaldo.', 'error');
     }
+  if (!isSuper && currentTenant && currentTenant.auditModuleEnabled !== true) {
+    return (
+      <div className="max-w-xl mx-auto mt-12 p-8 bg-slate-900 border border-slate-800 rounded-2xl text-center space-y-4 shadow-xl">
+        <div className="mx-auto w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+          <Lock className="w-8 h-8" />
+        </div>
+        <h2 className="text-xl font-bold text-white">Módulo de Auditoría Inactivo</h2>
+        <p className="text-sm text-slate-300 leading-relaxed">
+          El registro forense e historial inmutable de auditoría es un beneficio opcional gestionado y activado por el Super Administrador. Para habilitarlo en su organización, solicítelo al equipo de soporte de ChrizDev.
+        </p>
+        <div className="pt-2">
+          <a
+            href="https://wa.me/573183517802?text=Hola%20ChrizDev,%20deseo%20activar%20el%20m%C3%B3dulo%20de%20auditor%C3%ADa%20en%20mi%20organizaci%C3%B3n."
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-sm transition-colors shadow-lg shadow-emerald-900/30"
+          >
+            <MessageCircle className="w-4 h-4" /> Solicitar Activación de Auditoría
+          </a>
+        </div>
+      </div>
+    );
   }
 
   return (

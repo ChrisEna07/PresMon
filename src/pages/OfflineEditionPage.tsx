@@ -7,6 +7,7 @@ import {
   Loader2,
   LogIn,
   ShieldCheck,
+  Smartphone,
   XCircle,
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
@@ -23,6 +24,34 @@ export default function OfflineEditionPage() {
   const [status, setStatus] = useState<'working' | 'done' | 'error'>('working');
   const [message, setMessage] = useState('');
   const [result, setResult] = useState<SeedResult | null>(null);
+
+  // Detección e instalación PWA en pantalla de inicio
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [installedPwa, setInstalledPwa] = useState(false);
+
+  useEffect(() => {
+    const handler = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+    window.addEventListener('beforeinstallprompt', handler);
+    window.addEventListener('appinstalled', () => {
+      setInstalledPwa(true);
+      setDeferredPrompt(null);
+    });
+    return () => window.removeEventListener('beforeinstallprompt', handler);
+  }, []);
+
+  async function handleInstallPwa() {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      if (outcome === 'accepted') {
+        setInstalledPwa(true);
+      }
+      setDeferredPrompt(null);
+    }
+  }
 
   useEffect(() => {
     if (alreadyActive) return;
@@ -71,6 +100,14 @@ export default function OfflineEditionPage() {
                 La app ya funciona 100% sin internet en este equipo. Inicia sesión normalmente con
                 las cuentas de tu organización.
               </p>
+              {deferredPrompt && !installedPwa && (
+                <Button
+                  className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold gap-2"
+                  onClick={handleInstallPwa}
+                >
+                  <Smartphone size={16} /> Instalar en Pantalla de Inicio (PWA)
+                </Button>
+              )}
               <Button className="w-full" onClick={() => navigate('/login')}>
                 <LogIn size={15} /> Abrir PresMon
               </Button>
@@ -115,9 +152,16 @@ export default function OfflineEditionPage() {
                     </div>
                   </div>
                 )}
-                <p className="text-[11px] leading-relaxed text-slate-400">
-                  Consejo: instala la app en tu pantalla de inicio (menú del navegador → «Añadir a
-                  pantalla de inicio» o «Instalar») para usarla como aplicación.
+                {deferredPrompt && !installedPwa && (
+                  <Button
+                    className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold gap-2"
+                    onClick={handleInstallPwa}
+                  >
+                    <Smartphone size={16} /> Instalar en Pantalla de Inicio (PWA)
+                  </Button>
+                )}
+                <p className="text-[11px] leading-relaxed text-slate-500 bg-slate-50 p-2.5 rounded-lg border border-slate-200">
+                  💡 <strong>Usa PresMon como App:</strong> Si tu navegador no mostró el botón automático, pulsa el menú del navegador (tres puntos o icono compartir) y elige <strong>«Añadir a pantalla de inicio»</strong> o <strong>«Instalar aplicación»</strong>.
                 </p>
                 <Button className="w-full" onClick={() => navigate('/login')}>
                   <LogIn size={15} /> Abrir PresMon

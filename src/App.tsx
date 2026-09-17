@@ -19,6 +19,7 @@ import SuperPlansPage from './pages/SuperPlansPage';
 import ClientPortalPage from './pages/ClientPortalPage';
 import OfflineEditionPage from './pages/OfflineEditionPage';
 import RequestsPage from './pages/RequestsPage';
+import SocioPage from './pages/SocioPage';
 import { seedDatabase } from './db/db';
 import { runMoraEvaluation, startDayWatch } from './lib/moraEngine';
 import { isSyncConfigured, runSync, setLastSync } from './lib/sync/syncEngine';
@@ -34,6 +35,20 @@ function RequireSuperAdmin({ children }: { children: ReactNode }) {
   const { session } = useAuth();
   if (session?.role !== 'SUPER_ADMIN') return <Navigate to="/" replace />;
   return <>{children}</>;
+}
+
+function RequireTenantAdmin({ children }: { children: ReactNode }) {
+  const { session } = useAuth();
+  if (session?.role === 'SUPER_ADMIN') return <Navigate to="/super-admin" replace />;
+  if (session?.role === 'SOCIO') return <Navigate to="/socio" replace />;
+  return <>{children}</>;
+}
+
+function RootIndex() {
+  const { session } = useAuth();
+  if (session?.role === 'SUPER_ADMIN') return <Navigate to="/super-admin" replace />;
+  if (session?.role === 'SOCIO') return <Navigate to="/socio" replace />;
+  return <DashboardPage />;
 }
 
 function AppEffects() {
@@ -89,6 +104,7 @@ export default function App() {
             <Route path="/login" element={<LoginPage />} />
             <Route path="/portal" element={<ClientPortalPage />} />
             <Route path="/edicion-offline" element={<OfflineEditionPage />} />
+            <Route path="/socio" element={<SocioPage />} />
             <Route
               element={
                 <RequireAuth>
@@ -96,14 +112,64 @@ export default function App() {
                 </RequireAuth>
               }
             >
-              <Route index element={<DashboardPage />} />
-              <Route path="borrowers" element={<BorrowersPage />} />
-              <Route path="loans" element={<LoansPage />} />
-              <Route path="loans/new" element={<NewLoanPage />} />
-              <Route path="loans/:id" element={<LoanDetailPage />} />
-              <Route path="collections" element={<CollectionsPage />} />
-              <Route path="requests" element={<RequestsPage />} />
-              <Route path="simulator" element={<SimulatorPage />} />
+              <Route index element={<RootIndex />} />
+              <Route
+                path="borrowers"
+                element={
+                  <RequireTenantAdmin>
+                    <BorrowersPage />
+                  </RequireTenantAdmin>
+                }
+              />
+              <Route
+                path="loans"
+                element={
+                  <RequireTenantAdmin>
+                    <LoansPage />
+                  </RequireTenantAdmin>
+                }
+              />
+              <Route
+                path="loans/new"
+                element={
+                  <RequireTenantAdmin>
+                    <NewLoanPage />
+                  </RequireTenantAdmin>
+                }
+              />
+              <Route
+                path="loans/:id"
+                element={
+                  <RequireTenantAdmin>
+                    <LoanDetailPage />
+                  </RequireTenantAdmin>
+                }
+              />
+              <Route
+                path="collections"
+                element={
+                  <RequireTenantAdmin>
+                    <CollectionsPage />
+                  </RequireTenantAdmin>
+                }
+              />
+              <Route
+                path="requests"
+                element={
+                  <RequireTenantAdmin>
+                    <RequestsPage />
+                  </RequireTenantAdmin>
+                }
+              />
+              <Route
+                path="simulator"
+                element={
+                  <RequireTenantAdmin>
+                    <SimulatorPage />
+                  </RequireTenantAdmin>
+                }
+              />
+              <Route path="socio" element={<SocioPage />} />
               <Route path="audit" element={<AuditPage />} />
               <Route path="settings" element={<SettingsPage />} />
               <Route

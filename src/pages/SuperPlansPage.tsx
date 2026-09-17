@@ -7,22 +7,29 @@ import {
   Building2,
   CalendarPlus,
   Cloud,
+  Copy,
   CreditCard,
+  FileText,
   HandCoins,
   Megaphone,
+  MessageCircle,
   Plus,
+  Printer,
   Save,
   ShieldCheck,
+  Sparkles,
   Trash2,
   Wallet,
 } from 'lucide-react';
-import type { AppPaymentMode, PlanInstallment, ServicePlan, Tenant } from '../db/models';
+import type { AppPaymentMode, PlanInstallment, PlanServiceItem, ServicePlan, Tenant } from '../db/models';
 import { db, nowISO } from '../db/db';
 import { useAuth } from '../store/auth';
 import { uid } from '../lib/id';
 import { formatCOP, formatDateShort, todayStr, addDaysStr, nextMonthlyDue } from '../lib/format';
 import { logAudit } from '../lib/auditLogger';
 import { isSyncConfigured, runSync } from '../lib/sync/syncEngine';
+import { openWhatsApp } from '../lib/share';
+import { cn } from '../lib/format';
 import { PageHeader } from '../components/misc';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -36,6 +43,16 @@ import { useToast } from '../components/ui/toast';
 function pushToCloud(): void {
   void runSync().catch(() => undefined);
 }
+
+export const DEFAULT_PLAN_SERVICES: PlanServiceItem[] = [
+  { id: 'srv_base', name: 'Software PresMon Base', description: 'Acceso a gestión de préstamos, cobros, prestatarios y simulador', price: 50000, active: true },
+  { id: 'srv_cloud', name: 'Sincronización Cloud Multidispositivo', description: 'Base de datos en tiempo real en la nube, redundancia y respaldo continuo', price: 30000, active: true },
+  { id: 'srv_socio', name: 'Módulo Socio (Cobrador en Ruta)', description: 'Módulo móvil liviano de cobro en calle con enlaces de único uso', price: 25000, active: false },
+  { id: 'srv_audit', name: 'Auditoría Forense Avanzada', description: 'Registro inmutable de actividades y trazabilidad de operaciones', price: 20000, active: false },
+  { id: 'srv_multiadmin', name: 'Multi-Sesión / Multi-Admin', description: 'Hasta 5 administradores y sesiones simultáneas permitidas', price: 35000, active: false },
+  { id: 'srv_portal', name: 'Portal de Clientes Online', description: 'Acceso web para que los deudores consulten su estado de cuenta', price: 15000, active: false },
+  { id: 'srv_support', name: 'Soporte Prioritario ChrizDev', description: 'Atención personalizada prioritaria vía WhatsApp y resolución ágil', price: 15000, active: false },
+];
 
 export default function SuperPlansPage() {
   const { session } = useAuth();
@@ -69,6 +86,11 @@ export default function SuperPlansPage() {
   const [genEveryDays, setGenEveryDays] = useState('30');
   const [saving, setSaving] = useState(false);
 
+  // Servicios y Beneficios del Plan
+  const [servicesList, setServicesList] = useState<PlanServiceItem[]>(DEFAULT_PLAN_SERVICES);
+  const [invoiceModalOpen, setInvoiceModalOpen] = useState(false);
+  const [invoiceInstallmentTarget, setInvoiceInstallmentTarget] = useState<PlanInstallment | null>(null);
+
   // Modal para abonar a cuota
   const [abonoModalOpen, setAbonoModalOpen] = useState(false);
   const [abonoTargetRow, setAbonoTargetRow] = useState<PlanInstallment | null>(null);
@@ -82,6 +104,22 @@ export default function SuperPlansPage() {
     (plans ?? []).forEach((p) => map.set(p.tenantId, p));
     return map;
   }, [plans]);
+
+  const selectedTenant = useMemo(
+    () => (tenants ?? []).find((t) => t.tenantId === tenantId),
+    [tenants, tenantId],
+  );
+
+  const totalServicesCost = useMemo(
+    () => servicesList.filter((s) => s.active).reduce((sum, s) => sum + (Number(s.price) || 0), 0),
+    [servicesList],
+  );
+
+  function applyServicesToCloudFee() {
+    setCloudFee(String(totalServicesCost));
+    setDirty(true);
+    toast(`Mensualidad Cloud actualizada a ${formatCOP(totalServicesCost)} según servicios seleccionados.`, 'success');
+  }
 
   const existingPlanForOrg = tenantId ? planByTenant.get(tenantId) : undefined;
   const paidThroughDate = existingPlanForOrg?.cloudPaidThrough || '';
@@ -124,6 +162,21 @@ export default function SuperPlansPage() {
         ? [...existing.installments].sort((a, b) => a.dueDate.localeCompare(b.dueDate))
         : [],
     );
+
+    if (existing?.services && existing.services.length > 0) {
+      setServicesList(existing.services);
+    } else {
+      const t = (tenants ?? []).find((x) => x.tenantId === id);
+      setServicesList(
+        DEFAULT_PLAN_SERVICES.map((s) => {
+          if (s.id === 'srv_socio') return { ...s, active: t?.socioModuleEnabled === true };
+          if (s.id === 'srv_audit') return { ...s, active: t?.auditModuleEnabled === true };
+          if (s.id === 'srv_multiadmin') return { ...s, active: t?.allowMultipleSessions === true };
+          if (s.id === 'srv_portal') return { ...s, active: t?.clientPortalEnabled === true };
+          return s;
+        }),
+      );
+    }
     setDirty(false);
   }
 
@@ -205,6 +258,7 @@ export default function SuperPlansPage() {
         cloudBillingDay: Math.min(28, Math.max(1, Number(cloudBillingDay) || 1)),
         cloudPaidThrough: existing?.cloudPaidThrough,
         notes: notes.trim(),
+        services: servicesList,
         installments: [...rows]
           .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
           .map((r) => ({
@@ -216,6 +270,27 @@ export default function SuperPlansPage() {
         syncStatus: 'PENDING',
       };
       await db.plans.put(record);
+
+      // Sincronizar beneficios y límites de administradores en la organización
+      if (tenant) {
+        const socioActive = servicesList.some((s) => s.id === 'srv_socio' && s.active);
+        const auditActive = servicesList.some((s) => s.id === 'srv_audit' && s.active);
+        const multiadminActive = servicesList.some((s) => s.id === 'srv_multiadmin' && s.active);
+        const portalActive = servicesList.some((s) => s.id === 'srv_portal' && s.active);
+
+        const updatedTenant: Tenant = {
+          ...tenant,
+          socioModuleEnabled: socioActive,
+          auditModuleEnabled: auditActive,
+          allowMultipleSessions: multiadminActive,
+          maxAdmins: multiadminActive ? Math.max(5, tenant.maxAdmins || 5) : 1,
+          clientPortalEnabled: portalActive,
+          updatedAt: nowISO(),
+          syncStatus: 'PENDING',
+        };
+        await db.tenants.put(updatedTenant);
+      }
+
       await logAudit({
         tenantId: '',
         action: 'PLAN_UPDATED',
@@ -231,13 +306,14 @@ export default function SuperPlansPage() {
           cobroCloudIncluidoEnFactura: record.cloudServiceIncluded,
           mensualidadCloud: record.cloudMonthlyFee,
           diaCobroCloud: record.cloudBillingDay,
+          serviciosActivos: servicesList.filter((s) => s.active).map((s) => s.name),
           pagadaHasta: record.cloudPaidThrough ?? '—',
           cuotasApp: record.installments.length,
         },
       });
       setDirty(false);
       pushToCloud();
-      toast('Plan guardado y sincronizando a la nube.', 'success');
+      toast('Plan guardado y beneficios sincronizados con la organización.', 'success');
     } finally {
       setSaving(false);
     }
@@ -693,6 +769,97 @@ export default function SuperPlansPage() {
             </CardContent>
           </Card>
 
+          {/* Matriz de Servicios del Plan con Precios y Cálculo Dinámico */}
+          <Card className="mb-4">
+            <CardHeader className="pb-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <CardTitle className="flex items-center gap-2">
+                    <Wallet size={16} className="text-emerald-600" /> Matriz de Servicios y Módulos Adicionales
+                  </CardTitle>
+                  <CardDescription>
+                    Selecciona los beneficios incluidos en el plan. Se sincronizarán automáticamente con las funciones activas de la organización.
+                  </CardDescription>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 text-xs text-emerald-800 border-emerald-300 hover:bg-emerald-50 cursor-pointer"
+                    onClick={() => {
+                      setInvoiceInstallmentTarget(null);
+                      setInvoiceModalOpen(true);
+                    }}
+                  >
+                    <FileText size={14} /> Factura Digital
+                  </Button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {servicesList.map((srv, idx) => (
+                  <div
+                    key={srv.id}
+                    onClick={() => {
+                      const updated = [...servicesList];
+                      updated[idx] = { ...srv, active: !srv.active };
+                      setServicesList(updated);
+                      setDirty(true);
+                    }}
+                    className={cn(
+                      'flex items-start justify-between p-3 rounded-xl border transition-all cursor-pointer select-none',
+                      srv.active
+                        ? 'border-emerald-500/60 bg-emerald-50/50 shadow-xs'
+                        : 'border-slate-200 bg-white hover:border-slate-300 opacity-70',
+                    )}
+                  >
+                    <div className="flex items-start gap-2.5 min-w-0 pr-2">
+                      <input
+                        type="checkbox"
+                        checked={srv.active}
+                        onChange={() => {}} // handled by parent div
+                        className="mt-0.5 h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                      />
+                      <div>
+                        <p className={cn('text-xs font-bold leading-tight', srv.active ? 'text-slate-900' : 'text-slate-600')}>
+                          {srv.name}
+                        </p>
+                        {srv.description && (
+                          <p className="text-[11px] text-slate-500 mt-0.5 line-clamp-2">
+                            {srv.description}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <span className="text-xs font-bold text-slate-800">
+                        {formatCOP(srv.price)}
+                      </span>
+                      <p className="text-[10px] text-slate-400">/mes</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Barra de totalización de servicios y aplicación a mensualidad */}
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 p-3.5 rounded-xl bg-slate-900 text-white">
+                <div>
+                  <p className="text-xs font-medium text-slate-300">Total servicios mensuales seleccionados:</p>
+                  <p className="text-lg font-black text-emerald-400">{formatCOP(totalServicesCost)} <span className="text-xs text-slate-400 font-normal">COP/mes</span></p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs gap-1.5 w-full sm:w-auto"
+                  onClick={applyServicesToCloudFee}
+                >
+                  <Sparkles size={14} /> Aplicar a Mensualidad Cloud
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
           {payMode === 'FULL' ? (
             <div className="mb-4 space-y-3">
               <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-6 text-center text-sm text-emerald-700">
@@ -845,6 +1012,18 @@ export default function SuperPlansPage() {
                           </TD>
                           <TD className="text-right">
                             <div className="flex items-center justify-end gap-1.5">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                  setInvoiceInstallmentTarget(r);
+                                  setInvoiceModalOpen(true);
+                                }}
+                                title="Ver o emitir factura digital de esta cuota"
+                                className="text-slate-600 hover:text-slate-900 border-slate-300 hover:bg-slate-50 text-xs px-2 h-8 gap-1 cursor-pointer"
+                              >
+                                <FileText size={13} /> Factura
+                              </Button>
                               {!isPaid && (
                                 <Button
                                   variant="outline"
@@ -1017,6 +1196,138 @@ export default function SuperPlansPage() {
           </div>
         </Dialog>
       )}
+
+      {/* Modal de Factura Digital y Envío WhatsApp */}
+      <Dialog
+        open={invoiceModalOpen}
+        onClose={() => setInvoiceModalOpen(false)}
+        title="Factura Digital de Servicios PresMon"
+      >
+        {selectedTenant && (() => {
+          const invoiceNumber = `FAC-${selectedTenant.tenantId.slice(0, 6).toUpperCase()}-${today.replace(/-/g, '')}`;
+          const activeServices = servicesList.filter((s) => s.active);
+          const totalToPay = invoiceInstallmentTarget
+            ? Number(invoiceInstallmentTarget.amount) || 0
+            : (cloudIncluded ? Number(cloudFee) || totalServicesCost : totalServicesCost);
+
+          const invoiceTextWhatsApp = `📄 *PRESMON BY CHRIZDEV - FACTURA DIGITAL*\n` +
+            `----------------------------------------\n` +
+            `*Factura:* ${invoiceNumber}\n` +
+            `*Cliente:* ${selectedTenant.name}\n` +
+            `*Fecha de emisión:* ${today}\n` +
+            `*Vencimiento:* ${invoiceInstallmentTarget?.dueDate || nextCloudDue || today}\n` +
+            `----------------------------------------\n` +
+            `*DETALLE DE COBRO:*\n` +
+            (invoiceInstallmentTarget
+              ? `• ${invoiceInstallmentTarget.concept}: ${formatCOP(Number(invoiceInstallmentTarget.amount) || 0)}`
+              : activeServices.map((s) => `• ${s.name}: ${formatCOP(s.price)}`).join('\n')) +
+            `\n----------------------------------------\n` +
+            `*TOTAL A PAGAR: ${formatCOP(totalToPay)} COP*\n\n` +
+            `*MEDIOS DE PAGO DISPONIBLES:*\n` +
+            `• Bancolombia / Nequi / Daviplata: 318 351 7802\n` +
+            `• Titular: Christian Enao (ChrizDev)\n` +
+            `----------------------------------------\n` +
+            `_Favor adjuntar el comprobante en la app PresMon para su validación inmediata._`;
+
+          return (
+            <div className="space-y-4">
+              <div id="printable-invoice" className="p-4 bg-white border border-slate-200 rounded-xl space-y-4 text-xs">
+                <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+                  <div>
+                    <h3 className="font-black text-sm text-slate-900 tracking-wide">PRESMON CLOUD</h3>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-widest font-semibold">ChrizDev Solutions · NIT 10883344-1</p>
+                    <p className="text-[10px] text-slate-500">WhatsApp soporte: +57 318 351 7802</p>
+                  </div>
+                  <div className="text-right">
+                    <Badge variant="success" className="font-mono text-[10px]">
+                      {invoiceNumber}
+                    </Badge>
+                    <p className="text-[11px] text-slate-500 mt-1">Emisión: {today}</p>
+                  </div>
+                </div>
+
+                <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 flex justify-between items-center">
+                  <div>
+                    <p className="text-[10px] text-slate-400 font-bold uppercase">Facturado a:</p>
+                    <p className="font-bold text-slate-900 text-xs">{selectedTenant.name}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-[10px] text-slate-400 font-bold uppercase">Vencimiento:</p>
+                    <p className="font-bold text-slate-900 text-xs">{invoiceInstallmentTarget?.dueDate || nextCloudDue || today}</p>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <p className="font-bold text-slate-700 text-[11px] uppercase tracking-wider">Conceptos y Servicios:</p>
+                  <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden">
+                    {invoiceInstallmentTarget ? (
+                      <div className="flex justify-between items-center p-2">
+                        <span className="text-slate-800 font-medium">{invoiceInstallmentTarget.concept}</span>
+                        <span className="font-bold text-slate-900">{formatCOP(Number(invoiceInstallmentTarget.amount) || 0)}</span>
+                      </div>
+                    ) : activeServices.length === 0 ? (
+                      <div className="p-2 text-slate-400 text-center">Mensualidad general de servicios</div>
+                    ) : (
+                      activeServices.map((s) => (
+                        <div key={s.id} className="flex justify-between items-center p-2">
+                          <span className="text-slate-800 font-medium">{s.name}</span>
+                          <span className="font-bold text-slate-900">{formatCOP(s.price)}</span>
+                        </div>
+                      ))
+                    )}
+                    <div className="flex justify-between items-center p-2.5 bg-slate-50 font-bold text-slate-900 text-sm">
+                      <span>Total Facturado</span>
+                      <span className="text-emerald-700 font-black">{formatCOP(totalToPay)}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-lg bg-emerald-50/60 border border-emerald-200 p-2.5 space-y-1">
+                  <p className="font-bold text-emerald-900 text-[11px]">Cuentas Bancarias Autorizadas:</p>
+                  <p className="text-[11px] text-slate-700">Bancolombia / Nequi / Daviplata: <strong className="font-mono">318 351 7802</strong></p>
+                  <p className="text-[10px] text-slate-500">Titular: Christian Enao (ChrizDev)</p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => window.print()}
+                  className="gap-1.5 text-xs"
+                >
+                  <Printer size={14} /> Imprimir / PDF
+                </Button>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 text-xs"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(invoiceTextWhatsApp);
+                        toast('Factura copiada para WhatsApp', 'success');
+                      } catch {
+                        toast('No se pudo copiar automáticamente', 'error');
+                      }
+                    }}
+                  >
+                    <Copy size={13} /> Copiar para WhatsApp
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white"
+                    onClick={() => openWhatsApp('', invoiceTextWhatsApp)}
+                  >
+                    <MessageCircle size={14} /> Enviar por WhatsApp
+                  </Button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+      </Dialog>
     </div>
   );
 }

@@ -8,11 +8,14 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import type { UserRole } from '../db/models';
+import type { Tenant, UserRole } from '../db/models';
 import { db, deleteTenantCascade, wipeLocalTenantData } from '../db/db';
 import { sha256Hex } from '../lib/crypto';
 import { logAudit } from '../lib/auditLogger';
-import { fetchRemoteTenant, isSyncConfigured } from '../lib/sync/syncEngine';
+import { fetchRemoteTenant, isSyncConfigured, deepSanitize } from '../lib/sync/syncEngine';
+import { loadFirebaseConfig } from '../lib/sync/firebaseConfig';
+import { uid } from '../lib/id';
+import { nowISO } from '../lib/format';
 
 export interface Session {
   userId: string;
@@ -22,6 +25,8 @@ export interface Session {
   displayName: string;
   tenantName: string;
   clientPortalEnabled: boolean;
+  sessionId?: string;
+  deviceId?: string;
 }
 
 interface AuthContextValue {
@@ -29,10 +34,25 @@ interface AuthContextValue {
   ready: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => void;
-  refreshSessionFlags: () => Promise<'ok' | 'forced-logout' | 'org-deleted'>;
+  setDirectSession: (sess: Session) => void;
+  refreshSessionFlags: () => Promise<'ok' | 'forced-logout' | 'org-deleted' | 'concurrent-logout'>;
 }
 
 const SESSION_KEY = 'presmon_session_v1';
+const DEVICE_KEY = 'presmon_device_id_v1';
+
+export function getOrCreateDeviceId(): string {
+  try {
+    let id = localStorage.getItem(DEVICE_KEY);
+    if (!id) {
+      id = 'dev-' + Math.random().toString(36).substring(2, 9) + '-' + Date.now().toString(36);
+      localStorage.setItem(DEVICE_KEY, id);
+    }
+    return id;
+  } catch {
+    return 'dev-browser-' + Date.now();
+  }
+}
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
@@ -66,6 +86,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     let tenantName = 'Plataforma Global';
     let clientPortalEnabled = false;
+    const deviceId = getOrCreateDeviceId();
+    const sessionId = uid();
+    const deviceName =
+      typeof navigator !== 'undefined'
+        ? navigator.userAgent.slice(0, 120)
+        : 'Navegador Web';
+    const now = nowISO();
+
     if (user.role === 'TENANT_ADMIN') {
       // Verificación autoritativa contra la nube
       if (isSyncConfigured()) {
@@ -96,6 +124,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new Error('Esta organización está suspendida. Contacta al administrador.');
       tenantName = tenant.name;
       clientPortalEnabled = tenant.clientPortalEnabled;
+
+      // Actualizar sesión autorizada en la organización (para detectar colisiones en otros dispositivos)
+      const sessionUpdate: Partial<Tenant> = {
+        currentSessionId: sessionId,
+        currentDeviceId: deviceId,
+        currentDeviceName: deviceName,
+        sessionStartedAt: now,
+        lastSeenOnlineAt: now,
+        lastSeenDevice: deviceName,
+        updatedAt: now,
+      };
+
+      await db.tenants.update(user.tenantId, sessionUpdate);
+
+      // Notificar a Firestore de inmediato si hay conexión
+      const cfg = loadFirebaseConfig();
+      if (cfg && navigator.onLine) {
+        try {
+          const { initializeApp, getApps } = await import('firebase/app');
+          const { getFirestore, doc, setDoc } = await import('firebase/firestore');
+          const fs = getFirestore(getApps()[0] ?? initializeApp(cfg));
+          await setDoc(doc(fs, 'tenants', user.tenantId), deepSanitize(sessionUpdate), { merge: true });
+        } catch {
+          /* noop */
+        }
+      }
+    } else if (user.role === 'SOCIO') {
+      const tenant = await db.tenants.get(user.tenantId);
+      if (!tenant || tenant.status !== 'ACTIVE') {
+        throw new Error('Organización inactiva o no encontrada.');
+      }
+      if (tenant.socioModuleEnabled === false) {
+        throw new Error('El módulo de Socio no está habilitado para esta organización.');
+      }
+      tenantName = tenant.name;
+      clientPortalEnabled = tenant.clientPortalEnabled;
     }
 
     const next: Session = {
@@ -106,7 +170,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       displayName: user.displayName,
       tenantName,
       clientPortalEnabled,
+      sessionId,
+      deviceId,
     };
+    localStorage.removeItem('presmon_logout_reason');
     localStorage.setItem(SESSION_KEY, JSON.stringify(next));
     setSession(next);
     try {
@@ -121,6 +188,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       actorName: user.displayName,
       entityType: 'users',
       entityId: user.userId,
+      payloadSnapshot: {
+        dispositivo: deviceName,
+        deviceId,
+        sessionId,
+      },
     });
   }, []);
 
@@ -129,8 +201,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSession(null);
   }, []);
 
+  const setDirectSession = useCallback((sess: Session) => {
+    localStorage.removeItem('presmon_logout_reason');
+    localStorage.setItem(SESSION_KEY, JSON.stringify(sess));
+    setSession(sess);
+  }, []);
+
   const refreshSessionFlags = useCallback(async (): Promise<
-    'ok' | 'forced-logout' | 'org-deleted'
+    'ok' | 'forced-logout' | 'org-deleted' | 'concurrent-logout'
   > => {
     const current = sessionRef.current;
     if (!current) return 'ok';
@@ -141,8 +219,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(null);
       return 'forced-logout';
     }
-    // Verificación autoritativa contra la nube (solo actúa si la lectura
-    // tuvo éxito; offline no se toca nada).
+
+    // Verificación autoritativa contra la nube
     if (isSyncConfigured()) {
       const remote = await fetchRemoteTenant(current.tenantId);
       if (remote && remote.found && remote.data?.wipeLocalData === true) {
@@ -157,7 +235,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setSession(null);
         return 'org-deleted';
       }
+
+      // Verificación de sesión concurrente en la nube (si el plan no permite multidispositivo)
+      if (remote && remote.data) {
+        const allowMulti = remote.data.allowMultipleSessions === true;
+        const remoteSessionId = remote.data.currentSessionId;
+        if (!allowMulti && remoteSessionId && current.sessionId && remoteSessionId !== current.sessionId) {
+          localStorage.removeItem(SESSION_KEY);
+          setSession(null);
+          localStorage.setItem('presmon_logout_reason', 'CONCURRENT_DEVICE');
+          return 'concurrent-logout';
+        }
+      }
     }
+
     const tenant = await db.tenants.get(current.tenantId);
     if (!tenant || tenant.wipeLocalData) {
       await wipeLocalTenantData(current.tenantId).catch(() => undefined);
@@ -177,6 +268,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(null);
       return deleted ? 'org-deleted' : 'forced-logout';
     }
+
+    // Verificación local de sesión concurrente
+    if (!tenant.allowMultipleSessions && tenant.currentSessionId && current.sessionId && tenant.currentSessionId !== current.sessionId) {
+      localStorage.removeItem(SESSION_KEY);
+      setSession(null);
+      localStorage.setItem('presmon_logout_reason', 'CONCURRENT_DEVICE');
+      return 'concurrent-logout';
+    }
+
     const next: Session = {
       ...current,
       username: user.username,
@@ -190,8 +290,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ session, ready, login, logout, refreshSessionFlags }),
-    [session, ready, login, logout, refreshSessionFlags],
+    () => ({ session, ready, login, logout, setDirectSession, refreshSessionFlags }),
+    [session, ready, login, logout, setDirectSession, refreshSessionFlags],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
