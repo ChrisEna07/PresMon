@@ -1,6 +1,6 @@
 export type SyncStatus = 'SYNCED' | 'PENDING' | 'CONFLICT';
 export type TenantStatus = 'ACTIVE' | 'SUSPENDED' | 'DELETED';
-export type UserRole = 'SUPER_ADMIN' | 'TENANT_ADMIN' | 'SOCIO';
+export type UserRole = 'SUPER_ADMIN' | 'TENANT_ADMIN' | 'SOCIO' | 'ADMIN';
 export type DocumentType = 'CC' | 'CE' | 'TI' | 'NIT' | 'PAS';
 export type RiskBadge = 'A' | 'B' | 'C' | 'D';
 export type Frequency = 'DAILY' | 'WEEKLY' | 'BIWEEKLY' | 'MONTHLY';
@@ -102,15 +102,16 @@ export interface OfflineLicenseInfo {
 }
 
 export interface SingleUseSocioToken {
-  id: string;
+  id?: string;
   token: string;
+  tenantId?: string;
   createdAt: string;
   expiresAt?: string;
   used: boolean;
   usedAt?: string;
   usedByDevice?: string;
   socioName?: string;
-  active: boolean;
+  active?: boolean;
 }
 
 export interface Tenant extends BaseRecord {

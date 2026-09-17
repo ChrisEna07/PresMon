@@ -1252,10 +1252,12 @@ export default function SuperAdminPage() {
     if (!session) return;
     const token = crypto.randomUUID();
     const newToken: SingleUseSocioToken = {
+      id: crypto.randomUUID(),
       token,
       tenantId: tenant.tenantId,
       createdAt: new Date().toISOString(),
       used: false,
+      active: true,
     };
     const currentTokens = tenant.singleUseSocioTokens || [];
     const updated: Tenant = {

@@ -163,7 +163,7 @@ export default function SocioPage() {
         if (isSyncConfigured()) {
           const remote = await fetchRemoteTenant(urlTenantId);
           if (remote?.found && remote.data) {
-            tenantData = remote.data;
+            tenantData = remote.data as unknown as Tenant;
           }
         }
         if (!tenantData) {
