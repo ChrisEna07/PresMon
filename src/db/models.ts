@@ -234,9 +234,11 @@ export type AppPaymentMode = 'FULL' | 'INSTALLMENTS';
 export interface PlanServiceItem {
   id: string;
   name: string;
-  category: 'CORE' | 'ADDON';
-  cost: number;
-  included: boolean;
+  category?: 'CORE' | 'ADDON';
+  cost?: number;
+  price?: number;
+  included?: boolean;
+  active?: boolean;
   description: string;
 }
 
@@ -339,6 +341,7 @@ export interface Installment extends BaseRecord {
   installmentId: string;
   loanId: string;
   tenantId: string;
+  borrowerId?: string;
   installmentNumber: number;
   dueDate: string;
   principalAmount: number;

@@ -104,22 +104,34 @@ export default function SocioPage() {
 
   // Carga de datos locales de la organización
   const tenant = useLiveQuery(
-    () => (effectiveTenantId ? db.tenants.get(effectiveTenantId) : Promise.resolve(undefined)),
+    async (): Promise<Tenant | undefined> => {
+      if (!effectiveTenantId) return undefined;
+      return await db.tenants.get(effectiveTenantId);
+    },
     [effectiveTenantId],
   );
 
   const borrowers = useLiveQuery(
-    () => (effectiveTenantId ? db.borrowers.where('tenantId').equals(effectiveTenantId).toArray() : Promise.resolve([])),
+    async (): Promise<Borrower[]> => {
+      if (!effectiveTenantId) return [];
+      return await db.borrowers.where('tenantId').equals(effectiveTenantId).toArray();
+    },
     [effectiveTenantId],
   );
 
   const loans = useLiveQuery(
-    () => (effectiveTenantId ? db.loans.where('tenantId').equals(effectiveTenantId).toArray() : Promise.resolve([])),
+    async (): Promise<Loan[]> => {
+      if (!effectiveTenantId) return [];
+      return await db.loans.where('tenantId').equals(effectiveTenantId).toArray();
+    },
     [effectiveTenantId],
   );
 
   const installments = useLiveQuery(
-    () => (effectiveTenantId ? db.installments.where('tenantId').equals(effectiveTenantId).toArray() : Promise.resolve([])),
+    async (): Promise<Installment[]> => {
+      if (!effectiveTenantId) return [];
+      return await db.installments.where('tenantId').equals(effectiveTenantId).toArray();
+    },
     [effectiveTenantId],
   );
 
@@ -334,8 +346,8 @@ export default function SocioPage() {
     const q = searchQuery.toLowerCase().trim();
 
     return list.filter((inst) => {
-      const borrower = borrowerMap.get(inst.borrowerId);
       const loan = loanMap.get(inst.loanId);
+      const borrower = loan ? borrowerMap.get(loan.borrowerId) : undefined;
       return (
         (borrower?.fullName.toLowerCase().includes(q) ?? false) ||
         (borrower?.phone.toLowerCase().includes(q) ?? false) ||
@@ -371,7 +383,7 @@ export default function SocioPage() {
 
   function openCollectModal(inst: Installment) {
     const loan = loanMap.get(inst.loanId);
-    const borrower = borrowerMap.get(inst.borrowerId);
+    const borrower = loan ? borrowerMap.get(loan.borrowerId) : undefined;
     if (!loan || !borrower) {
       toast('No se encontró el préstamo o cliente asociado.', 'error');
       return;
@@ -703,8 +715,8 @@ export default function SocioPage() {
             ) : (
               <div className="space-y-2.5">
                 {pendingRouteInstallments.map((inst) => {
-                  const borrower = borrowerMap.get(inst.borrowerId);
                   const loan = loanMap.get(inst.loanId);
+                  const borrower = loan ? borrowerMap.get(loan.borrowerId) : undefined;
                   const remaining = Math.max(0, inst.baseAmountDue + inst.lateFeeCharged - inst.amountPaid);
                   const isOverdue = inst.dueDate < today;
                   const isToday = inst.dueDate === today;

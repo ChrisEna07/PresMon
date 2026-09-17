@@ -70,7 +70,12 @@ export default function AuditPage() {
 
   const tenantsList = useLiveQuery(async () => db.tenants.toArray() as Promise<Tenant[]>, []);
   const currentTenant = useLiveQuery(
-    () => (!isSuper && session?.tenantId ? db.tenants.get(session.tenantId) : Promise.resolve(undefined)),
+    async (): Promise<Tenant | undefined> => {
+      if (!isSuper && session?.tenantId) {
+        return await db.tenants.get(session.tenantId);
+      }
+      return undefined;
+    },
     [isSuper, session?.tenantId],
   );
   const tenantNameById = useMemo(() => {

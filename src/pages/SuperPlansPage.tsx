@@ -834,7 +834,7 @@ export default function SuperPlansPage() {
                     </div>
                     <div className="text-right shrink-0">
                       <span className="text-xs font-bold text-slate-800">
-                        {formatCOP(srv.price)}
+                        {formatCOP(srv.price || 0)}
                       </span>
                       <p className="text-[10px] text-slate-400">/mes</p>
                     </div>
@@ -1220,7 +1220,7 @@ export default function SuperPlansPage() {
             `*DETALLE DE COBRO:*\n` +
             (invoiceInstallmentTarget
               ? `• ${invoiceInstallmentTarget.concept}: ${formatCOP(Number(invoiceInstallmentTarget.amount) || 0)}`
-              : activeServices.map((s) => `• ${s.name}: ${formatCOP(s.price)}`).join('\n')) +
+              : activeServices.map((s) => `• ${s.name}: ${formatCOP(s.price || 0)}`).join('\n')) +
             `\n----------------------------------------\n` +
             `*TOTAL A PAGAR: ${formatCOP(totalToPay)} COP*\n\n` +
             `*MEDIOS DE PAGO DISPONIBLES:*\n` +
@@ -1271,7 +1271,7 @@ export default function SuperPlansPage() {
                       activeServices.map((s) => (
                         <div key={s.id} className="flex justify-between items-center p-2">
                           <span className="text-slate-800 font-medium">{s.name}</span>
-                          <span className="font-bold text-slate-900">{formatCOP(s.price)}</span>
+                          <span className="font-bold text-slate-900">{formatCOP(s.price || 0)}</span>
                         </div>
                       ))
                     )}

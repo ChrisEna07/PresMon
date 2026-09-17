@@ -346,6 +346,7 @@ export default function Layout() {
     const remote = await fetchRemoteTenant(session.tenantId);
     if (!remote || !remote.found || !remote.data) return;
     if (remote.status === 'DELETED') return; // el guardia de sesión ya lo maneja
+    const local = await db.tenants.get(session.tenantId);
 
     // Orden remota de borrado local emitida por Super Admin
     if (remote.data.wipeLocalData === true) {
