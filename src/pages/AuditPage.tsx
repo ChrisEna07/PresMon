@@ -171,6 +171,8 @@ export default function AuditPage() {
     } catch {
       toast('No se pudo cifrar el respaldo.', 'error');
     }
+  }
+
   if (!isSuper && currentTenant && currentTenant.auditModuleEnabled !== true) {
     return (
       <div className="max-w-xl mx-auto mt-12 p-8 bg-slate-900 border border-slate-800 rounded-2xl text-center space-y-4 shadow-xl">
