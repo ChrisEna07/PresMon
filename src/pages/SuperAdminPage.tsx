@@ -774,7 +774,7 @@ export default function SuperAdminPage() {
     setBankName('');
     setBankAccountType('WALLET');
     setBankAccountNumber('');
-    setBankHolderName('Christian Enao (ChrizDev)');
+    setBankHolderName('Christian Romero');
     setBankHolderDoc('');
     setBankNotes('');
     setBankDialogOpen(true);
@@ -2855,7 +2855,7 @@ export default function SuperAdminPage() {
               <Input
                 value={bankHolderName}
                 onChange={(e) => setBankHolderName(e.target.value)}
-                placeholder="Christian Enao (ChrizDev)"
+                placeholder="Christian Romero"
                 required
               />
             </div>

@@ -90,6 +90,7 @@ export default function SuperPlansPage() {
   const [servicesList, setServicesList] = useState<PlanServiceItem[]>(DEFAULT_PLAN_SERVICES);
   const [invoiceModalOpen, setInvoiceModalOpen] = useState(false);
   const [invoiceInstallmentTarget, setInvoiceInstallmentTarget] = useState<PlanInstallment | null>(null);
+  const [invoiceCustomAmount, setInvoiceCustomAmount] = useState('');
 
   // Modal para abonar a cuota
   const [abonoModalOpen, setAbonoModalOpen] = useState(false);
@@ -164,7 +165,21 @@ export default function SuperPlansPage() {
     );
 
     if (existing?.services && existing.services.length > 0) {
-      setServicesList(existing.services);
+      const map = new Map(existing.services.map((s) => [s.id, s]));
+      setServicesList(
+        DEFAULT_PLAN_SERVICES.map((def) => {
+          const saved = map.get(def.id);
+          if (saved) {
+            return {
+              ...def,
+              ...saved,
+              price: Number(saved.price ?? saved.cost ?? def.price) || 0,
+              active: saved.active ?? saved.included ?? def.active,
+            };
+          }
+          return def;
+        }),
+      );
     } else {
       const t = (tenants ?? []).find((x) => x.tenantId === id);
       setServicesList(
@@ -788,6 +803,8 @@ export default function SuperPlansPage() {
                     className="gap-1.5 text-xs text-emerald-800 border-emerald-300 hover:bg-emerald-50 cursor-pointer"
                     onClick={() => {
                       setInvoiceInstallmentTarget(null);
+                      const total = cloudIncluded ? Number(cloudFee) || totalServicesCost : totalServicesCost;
+                      setInvoiceCustomAmount(String(total));
                       setInvoiceModalOpen(true);
                     }}
                   >
@@ -808,20 +825,20 @@ export default function SuperPlansPage() {
                       setDirty(true);
                     }}
                     className={cn(
-                      'flex items-start justify-between p-3 rounded-xl border transition-all cursor-pointer select-none',
+                      'flex items-center justify-between p-3 rounded-xl border transition-all cursor-pointer select-none gap-2',
                       srv.active
                         ? 'border-emerald-500/60 bg-emerald-50/50 shadow-xs'
-                        : 'border-slate-200 bg-white hover:border-slate-300 opacity-70',
+                        : 'border-slate-200 bg-white hover:border-slate-300 opacity-75',
                     )}
                   >
-                    <div className="flex items-start gap-2.5 min-w-0 pr-2">
+                    <div className="flex items-start gap-2.5 min-w-0 flex-1 pr-1">
                       <input
                         type="checkbox"
                         checked={srv.active}
                         onChange={() => {}} // handled by parent div
-                        className="mt-0.5 h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                        className="mt-0.5 h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer shrink-0"
                       />
-                      <div>
+                      <div className="min-w-0">
                         <p className={cn('text-xs font-bold leading-tight', srv.active ? 'text-slate-900' : 'text-slate-600')}>
                           {srv.name}
                         </p>
@@ -832,11 +849,29 @@ export default function SuperPlansPage() {
                         )}
                       </div>
                     </div>
-                    <div className="text-right shrink-0">
-                      <span className="text-xs font-bold text-slate-800">
-                        {formatCOP(srv.price || 0)}
-                      </span>
-                      <p className="text-[10px] text-slate-400">/mes</p>
+                    <div
+                      className="flex flex-col items-end shrink-0 pl-1"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="flex items-center gap-1 bg-white rounded-lg border border-slate-300 px-2 py-1 shadow-2xs focus-within:border-emerald-500 focus-within:ring-1 focus-within:ring-emerald-500">
+                        <span className="text-[11px] font-bold text-slate-400">$</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="1000"
+                          value={srv.price ?? 0}
+                          onChange={(e) => {
+                            const val = Math.max(0, parseInt(e.target.value, 10) || 0);
+                            const updated = [...servicesList];
+                            updated[idx] = { ...srv, price: val };
+                            setServicesList(updated);
+                            setDirty(true);
+                          }}
+                          className="w-20 text-right text-xs font-bold text-slate-900 focus:outline-none bg-transparent"
+                          title="Precio mensual editable"
+                        />
+                      </div>
+                      <span className="text-[9px] text-slate-400 mt-0.5">COP / mes</span>
                     </div>
                   </div>
                 ))}
@@ -1017,6 +1052,10 @@ export default function SuperPlansPage() {
                                 size="sm"
                                 onClick={() => {
                                   setInvoiceInstallmentTarget(r);
+                                  const total = Number(r.amount) || 0;
+                                  const paid = Number(r.paidAmount) || 0;
+                                  const remaining = Math.max(0, total - paid);
+                                  setInvoiceCustomAmount(String(remaining > 0 ? remaining : total));
                                   setInvoiceModalOpen(true);
                                 }}
                                 title="Ver o emitir factura digital de esta cuota"
@@ -1201,16 +1240,48 @@ export default function SuperPlansPage() {
       <Dialog
         open={invoiceModalOpen}
         onClose={() => setInvoiceModalOpen(false)}
-        title="Factura Digital de Servicios PresMon"
+        title="Factura Digital de Cobro"
       >
         {selectedTenant && (() => {
           const invoiceNumber = `FAC-${selectedTenant.tenantId.slice(0, 6).toUpperCase()}-${today.replace(/-/g, '')}`;
           const activeServices = servicesList.filter((s) => s.active);
-          const totalToPay = invoiceInstallmentTarget
-            ? Number(invoiceInstallmentTarget.amount) || 0
+
+          const isInstallment = !!invoiceInstallmentTarget;
+          const instAmount = isInstallment ? (Number(invoiceInstallmentTarget.amount) || 0) : 0;
+          const instPaidAmount = isInstallment ? (Number(invoiceInstallmentTarget.paidAmount) || 0) : 0;
+          const instRemainingBalance = Math.max(0, instAmount - instPaidAmount);
+
+          // Monto sugerido por defecto: si es cuota con abono, el saldo restante
+          const defaultDue = isInstallment
+            ? (instPaidAmount > 0 ? instRemainingBalance : instAmount)
             : (cloudIncluded ? Number(cloudFee) || totalServicesCost : totalServicesCost);
 
-          const invoiceTextWhatsApp = `📄 *PRESMON BY CHRIZDEV - FACTURA DIGITAL*\n` +
+          const totalToPay = invoiceCustomAmount !== ''
+            ? Math.max(0, Number(invoiceCustomAmount) || 0)
+            : defaultDue;
+
+          // Detalle textual para WhatsApp
+          let detalleWhatsApp = '';
+          if (isInstallment) {
+            detalleWhatsApp = `• Concepto: ${invoiceInstallmentTarget.concept}\n` +
+              `• Valor pactado de la cuota: ${formatCOP(instAmount)}\n`;
+            if (instPaidAmount > 0) {
+              detalleWhatsApp += `• Abono registrado previamente: - ${formatCOP(instPaidAmount)}\n` +
+                `• Saldo pendiente antes de este cobro: ${formatCOP(instRemainingBalance)}\n`;
+            }
+            if (totalToPay !== (instPaidAmount > 0 ? instRemainingBalance : instAmount)) {
+              detalleWhatsApp += `• Monto a facturar en esta transacción: ${formatCOP(totalToPay)}\n`;
+              if (totalToPay < instRemainingBalance) {
+                detalleWhatsApp += `• Saldo restante tras este pago: ${formatCOP(instRemainingBalance - totalToPay)}\n`;
+              }
+            }
+          } else {
+            detalleWhatsApp = activeServices.length > 0
+              ? activeServices.map((s) => `• ${s.name}: ${formatCOP(s.price || 0)}`).join('\n')
+              : `• Mensualidad general de servicios Cloud: ${formatCOP(totalToPay)}`;
+          }
+
+          const invoiceTextWhatsApp = `📄 *PRESMON - CUENTA DE COBRO*\n` +
             `----------------------------------------\n` +
             `*Factura:* ${invoiceNumber}\n` +
             `*Cliente:* ${selectedTenant.name}\n` +
@@ -1218,25 +1289,57 @@ export default function SuperPlansPage() {
             `*Vencimiento:* ${invoiceInstallmentTarget?.dueDate || nextCloudDue || today}\n` +
             `----------------------------------------\n` +
             `*DETALLE DE COBRO:*\n` +
-            (invoiceInstallmentTarget
-              ? `• ${invoiceInstallmentTarget.concept}: ${formatCOP(Number(invoiceInstallmentTarget.amount) || 0)}`
-              : activeServices.map((s) => `• ${s.name}: ${formatCOP(s.price || 0)}`).join('\n')) +
-            `\n----------------------------------------\n` +
-            `*TOTAL A PAGAR: ${formatCOP(totalToPay)} COP*\n\n` +
-            `*MEDIOS DE PAGO DISPONIBLES:*\n` +
-            `• Bancolombia / Nequi / Daviplata: 318 351 7802\n` +
-            `• Titular: Christian Enao (ChrizDev)\n` +
+            detalleWhatsApp + `\n` +
             `----------------------------------------\n` +
-            `_Favor adjuntar el comprobante en la app PresMon para su validación inmediata._`;
+            `*TOTAL A PAGAR: ${formatCOP(totalToPay)} COP*\n\n` +
+            `*MEDIO DE PAGO DISPONIBLE:*\n` +
+            `• Nequi: 318 351 7802\n` +
+            `• Titular: Christian Romero\n` +
+            `----------------------------------------\n` +
+            `_Favor enviar el comprobante de pago por este medio o adjuntarlo en la aplicación PresMon._`;
 
           return (
             <div className="space-y-4">
+              {/* Ajuste manual del monto de la factura para transacciones exactas */}
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-bold text-slate-800">
+                    {isInstallment ? 'Monto a cobrar en esta factura:' : 'Monto total a facturar:'}
+                  </Label>
+                  <span className="text-[11px] text-slate-500 font-medium">Editable para transacciones exactas</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-bold text-slate-600">$</span>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="1000"
+                    value={invoiceCustomAmount !== '' ? invoiceCustomAmount : String(defaultDue)}
+                    onChange={(e) => setInvoiceCustomAmount(e.target.value)}
+                    className="h-8 text-sm font-bold text-slate-900 bg-white"
+                    placeholder="Monto a cobrar"
+                  />
+                  {isInstallment && instPaidAmount > 0 && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-[11px] shrink-0 gap-1 cursor-pointer"
+                      onClick={() => setInvoiceCustomAmount(String(instRemainingBalance))}
+                    >
+                      Saldo Restante ({formatCOP(instRemainingBalance)})
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              {/* Recibo imprimible / exportable */}
               <div id="printable-invoice" className="p-4 bg-white border border-slate-200 rounded-xl space-y-4 text-xs">
                 <div className="flex items-center justify-between border-b border-slate-200 pb-3">
                   <div>
-                    <h3 className="font-black text-sm text-slate-900 tracking-wide">PRESMON CLOUD</h3>
-                    <p className="text-[10px] text-slate-500 uppercase tracking-widest font-semibold">ChrizDev Solutions · NIT 10883344-1</p>
-                    <p className="text-[10px] text-slate-500">WhatsApp soporte: +57 318 351 7802</p>
+                    <h3 className="font-black text-base text-slate-900 tracking-wide">PRESMON</h3>
+                    <p className="text-[11px] text-slate-600 font-semibold">Christian Romero · Software de Gestión</p>
+                    <p className="text-[10px] text-slate-500">Contacto & WhatsApp: +57 318 351 7802</p>
                   </div>
                   <div className="text-right">
                     <Badge variant="success" className="font-mono text-[10px]">
@@ -1260,10 +1363,35 @@ export default function SuperPlansPage() {
                 <div className="space-y-1.5">
                   <p className="font-bold text-slate-700 text-[11px] uppercase tracking-wider">Conceptos y Servicios:</p>
                   <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden">
-                    {invoiceInstallmentTarget ? (
-                      <div className="flex justify-between items-center p-2">
-                        <span className="text-slate-800 font-medium">{invoiceInstallmentTarget.concept}</span>
-                        <span className="font-bold text-slate-900">{formatCOP(Number(invoiceInstallmentTarget.amount) || 0)}</span>
+                    {isInstallment ? (
+                      <div className="p-3 bg-slate-50/60 space-y-2">
+                        <div className="flex justify-between items-center text-slate-800">
+                          <span className="font-bold">{invoiceInstallmentTarget.concept}</span>
+                          <span className="font-bold">{formatCOP(instAmount)}</span>
+                        </div>
+
+                        {instPaidAmount > 0 && (
+                          <>
+                            <div className="flex justify-between items-center text-emerald-700 text-xs pl-2 border-l-2 border-emerald-500">
+                              <span>
+                                Abono registrado previamente
+                                {invoiceInstallmentTarget.lastAbonoAt ? ` (${formatDateShort(invoiceInstallmentTarget.lastAbonoAt.slice(0, 10))})` : ''}
+                              </span>
+                              <span className="font-bold">- {formatCOP(instPaidAmount)}</span>
+                            </div>
+                            <div className="flex justify-between items-center text-slate-700 text-xs font-semibold pt-1 border-t border-slate-200">
+                              <span>Saldo pendiente de la cuota:</span>
+                              <span>{formatCOP(instRemainingBalance)}</span>
+                            </div>
+                          </>
+                        )}
+
+                        {totalToPay !== (instPaidAmount > 0 ? instRemainingBalance : instAmount) && (
+                          <div className="flex justify-between items-center text-indigo-700 text-xs font-semibold pt-1 border-t border-slate-200">
+                            <span>Monto liquidado en esta factura:</span>
+                            <span>{formatCOP(totalToPay)}</span>
+                          </div>
+                        )}
                       </div>
                     ) : activeServices.length === 0 ? (
                       <div className="p-2 text-slate-400 text-center">Mensualidad general de servicios</div>
@@ -1275,17 +1403,26 @@ export default function SuperPlansPage() {
                         </div>
                       ))
                     )}
-                    <div className="flex justify-between items-center p-2.5 bg-slate-50 font-bold text-slate-900 text-sm">
-                      <span>Total Facturado</span>
-                      <span className="text-emerald-700 font-black">{formatCOP(totalToPay)}</span>
+                    <div className="flex justify-between items-center p-2.5 bg-slate-100 font-bold text-slate-900 text-sm">
+                      <div>
+                        <span>Total a Pagar</span>
+                        {isInstallment && instPaidAmount > 0 && totalToPay < instRemainingBalance && (
+                          <p className="text-[10px] text-slate-500 font-normal">
+                            Saldo restante pendiente tras este pago: {formatCOP(instRemainingBalance - totalToPay)}
+                          </p>
+                        )}
+                      </div>
+                      <span className="text-emerald-700 font-black text-base">{formatCOP(totalToPay)} COP</span>
                     </div>
                   </div>
                 </div>
 
                 <div className="rounded-lg bg-emerald-50/60 border border-emerald-200 p-2.5 space-y-1">
-                  <p className="font-bold text-emerald-900 text-[11px]">Cuentas Bancarias Autorizadas:</p>
-                  <p className="text-[11px] text-slate-700">Bancolombia / Nequi / Daviplata: <strong className="font-mono">318 351 7802</strong></p>
-                  <p className="text-[10px] text-slate-500">Titular: Christian Enao (ChrizDev)</p>
+                  <p className="font-bold text-emerald-900 text-[11px]">Cuenta Autorizada para Pago:</p>
+                  <p className="text-[11px] text-slate-800">
+                    Nequi: <strong className="font-mono font-black text-slate-900">318 351 7802</strong>
+                  </p>
+                  <p className="text-[10px] text-slate-600 font-medium">Titular: Christian Romero</p>
                 </div>
               </div>
 
@@ -1294,7 +1431,7 @@ export default function SuperPlansPage() {
                   variant="outline"
                   size="sm"
                   onClick={() => window.print()}
-                  className="gap-1.5 text-xs"
+                  className="gap-1.5 text-xs cursor-pointer"
                 >
                   <Printer size={14} /> Imprimir / PDF
                 </Button>
@@ -1303,7 +1440,7 @@ export default function SuperPlansPage() {
                   <Button
                     variant="outline"
                     size="sm"
-                    className="gap-1.5 text-xs"
+                    className="gap-1.5 text-xs cursor-pointer"
                     onClick={async () => {
                       try {
                         await navigator.clipboard.writeText(invoiceTextWhatsApp);
@@ -1317,7 +1454,7 @@ export default function SuperPlansPage() {
                   </Button>
                   <Button
                     size="sm"
-                    className="gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white"
+                    className="gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer"
                     onClick={() => openWhatsApp('', invoiceTextWhatsApp)}
                   >
                     <MessageCircle size={14} /> Enviar por WhatsApp
