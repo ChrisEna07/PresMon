@@ -38,7 +38,7 @@ interface SocioStoredSession {
   tenantId: string;
   tenantName: string;
   socioName: string;
-  tokenId: string;
+  tokenId?: string;
   deviceId: string;
 }
 
@@ -214,7 +214,7 @@ export default function SocioPage() {
               tenantId: tenantData.tenantId,
               tenantName: tenantData.name,
               socioName: found.socioName || 'Cobrador de Campo',
-              tokenId: found.id,
+              tokenId: found.id || found.token,
               deviceId,
             };
             localStorage.setItem(SOCIO_SESSION_STORAGE, JSON.stringify(sess));
@@ -245,7 +245,7 @@ export default function SocioPage() {
 
         // Marcar el token como quemado/usado por este dispositivo de forma autoritativa
         const updatedTokens = tokens.map((t) =>
-          t.id === found.id
+          t.token === found.token
             ? { ...t, used: true, usedAt: now, usedByDevice: deviceId }
             : t,
         );
@@ -271,7 +271,7 @@ export default function SocioPage() {
           tenantId: tenantData.tenantId,
           tenantName: tenantData.name,
           socioName: found.socioName || 'Cobrador de Campo',
-          tokenId: found.id,
+          tokenId: found.id || found.token,
           deviceId,
         };
 
