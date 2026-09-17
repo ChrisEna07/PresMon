@@ -329,12 +329,12 @@ export default function SuperAdminPage() {
     const totalPlanPending = Math.max(0, totalPlanContracted - totalPlanCollected);
 
     // 2. Operación Global de Préstamos (Cartera en calle de las Organizaciones)
-    const validLoans = (loans ?? []).filter((l) => tenantIdsSet.has(l.tenantId) && l.status !== 'DELETED');
+    const validLoans = (loans ?? []).filter((l) => tenantIdsSet.has(l.tenantId) && l.status !== 'CANCELLED');
     const validInstallments = (installments ?? []).filter((i) => tenantIdsSet.has(i.tenantId));
     
     const totalLoansPrincipal = validLoans.reduce((sum, l) => sum + (Number(l.principalAmount) || 0), 0);
-    const totalLoansPaid = validInstallments.reduce((sum, i) => sum + (Number(i.paidAmount) || 0), 0);
-    const totalInstallmentsReceivable = validInstallments.reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
+    const totalLoansPaid = validInstallments.reduce((sum, i) => sum + (Number(i.amountPaid) || 0), 0);
+    const totalInstallmentsReceivable = validInstallments.reduce((sum, i) => sum + (Number(i.totalAmountWithLateFee || i.baseAmountDue) || 0), 0);
     const totalLoansPending = Math.max(0, totalInstallmentsReceivable - totalLoansPaid);
 
     // 3. Top Organizaciones con más Uso (Eventos de Auditoría)
