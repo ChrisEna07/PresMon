@@ -491,8 +491,11 @@ export default function Layout() {
       setLastSync(session.tenantId || 'global');
       const guardOk = await enforceSessionGuard();
       if (!guardOk) return;
-      if (result.errors.length > 0) {
-        toast(`Sincronización con errores: ${friendlySyncError(result.errors[0])}`, 'error');
+      const criticalErrors = result.errors.filter(
+        (e) => !e.toLowerCase().includes('audit_logs') && !e.toLowerCase().includes('payment_reports'),
+      );
+      if (criticalErrors.length > 0) {
+        toast(`Sincronización con errores: ${friendlySyncError(criticalErrors[0])}`, 'error');
       } else if (!silent) {
         toast(`Sincronizado: ${result.pushed} enviados, ${result.pulled} recibidos.`, 'success');
       }

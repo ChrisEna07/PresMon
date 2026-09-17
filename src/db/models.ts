@@ -241,6 +241,8 @@ export interface PlanServiceItem {
   included?: boolean;
   active?: boolean;
   description: string;
+  /** Modalidad de cobro: recurrente mensual o pago único (licencia / setup) */
+  billingCycle?: 'MONTHLY' | 'ONE_TIME';
 }
 
 export interface ServicePlan extends BaseRecord {

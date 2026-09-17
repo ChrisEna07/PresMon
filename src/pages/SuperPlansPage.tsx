@@ -45,13 +45,13 @@ function pushToCloud(): void {
 }
 
 export const DEFAULT_PLAN_SERVICES: PlanServiceItem[] = [
-  { id: 'srv_base', name: 'Software PresMon Base', description: 'Acceso a gestión de préstamos, cobros, prestatarios y simulador', price: 50000, active: true },
-  { id: 'srv_cloud', name: 'Sincronización Cloud Multidispositivo', description: 'Base de datos en tiempo real en la nube, redundancia y respaldo continuo', price: 30000, active: true },
-  { id: 'srv_socio', name: 'Módulo Socio (Cobrador en Ruta)', description: 'Módulo móvil liviano de cobro en calle con enlaces de único uso', price: 25000, active: false },
-  { id: 'srv_audit', name: 'Auditoría Forense Avanzada', description: 'Registro inmutable de actividades y trazabilidad de operaciones', price: 20000, active: false },
-  { id: 'srv_multiadmin', name: 'Multi-Sesión / Multi-Admin', description: 'Hasta 5 administradores y sesiones simultáneas permitidas', price: 35000, active: false },
-  { id: 'srv_portal', name: 'Portal de Clientes Online', description: 'Acceso web para que los deudores consulten su estado de cuenta', price: 15000, active: false },
-  { id: 'srv_support', name: 'Soporte Prioritario ChrizDev', description: 'Atención personalizada prioritaria vía WhatsApp y resolución ágil', price: 15000, active: false },
+  { id: 'srv_base', name: 'Software PresMon Base', description: 'Acceso a gestión de préstamos, cobros, prestatarios y simulador', price: 50000, active: true, billingCycle: 'MONTHLY' },
+  { id: 'srv_cloud', name: 'Sincronización Cloud Multidispositivo', description: 'Base de datos en tiempo real en la nube, redundancia y respaldo continuo', price: 30000, active: true, billingCycle: 'MONTHLY' },
+  { id: 'srv_socio', name: 'Módulo Socio (Cobrador en Ruta)', description: 'Módulo móvil liviano de cobro en calle con enlaces de único uso', price: 25000, active: false, billingCycle: 'MONTHLY' },
+  { id: 'srv_audit', name: 'Auditoría Forense Avanzada', description: 'Registro inmutable de actividades y trazabilidad de operaciones', price: 20000, active: false, billingCycle: 'MONTHLY' },
+  { id: 'srv_multiadmin', name: 'Multi-Sesión / Multi-Admin', description: 'Hasta 5 administradores y sesiones simultáneas permitidas', price: 35000, active: false, billingCycle: 'MONTHLY' },
+  { id: 'srv_portal', name: 'Portal de Clientes Online', description: 'Acceso web para que los deudores consulten su estado de cuenta', price: 15000, active: false, billingCycle: 'MONTHLY' },
+  { id: 'srv_support', name: 'Soporte Prioritario ChrizDev', description: 'Atención personalizada prioritaria vía WhatsApp y resolución ágil', price: 15000, active: false, billingCycle: 'MONTHLY' },
 ];
 
 export default function SuperPlansPage() {
@@ -111,15 +111,37 @@ export default function SuperPlansPage() {
     [tenants, tenantId],
   );
 
+  const totalMonthlyServices = useMemo(
+    () =>
+      servicesList
+        .filter((s) => s.active && s.billingCycle !== 'ONE_TIME')
+        .reduce((sum, s) => sum + (Number(s.price) || 0), 0),
+    [servicesList],
+  );
+
+  const totalOneTimeServices = useMemo(
+    () =>
+      servicesList
+        .filter((s) => s.active && s.billingCycle === 'ONE_TIME')
+        .reduce((sum, s) => sum + (Number(s.price) || 0), 0),
+    [servicesList],
+  );
+
   const totalServicesCost = useMemo(
     () => servicesList.filter((s) => s.active).reduce((sum, s) => sum + (Number(s.price) || 0), 0),
     [servicesList],
   );
 
   function applyServicesToCloudFee() {
-    setCloudFee(String(totalServicesCost));
+    setCloudFee(String(totalMonthlyServices));
     setDirty(true);
-    toast(`Mensualidad Cloud actualizada a ${formatCOP(totalServicesCost)} según servicios seleccionados.`, 'success');
+    toast(`Mensualidad Cloud actualizada a ${formatCOP(totalMonthlyServices)} según servicios mensuales seleccionados.`, 'success');
+  }
+
+  function applyServicesToAppTotal() {
+    setAppTotal(String(totalOneTimeServices));
+    setDirty(true);
+    toast(`Valor total de la app (contado) actualizado a ${formatCOP(totalOneTimeServices)} según servicios de pago único.`, 'success');
   }
 
   const existingPlanForOrg = tenantId ? planByTenant.get(tenantId) : undefined;
@@ -175,6 +197,7 @@ export default function SuperPlansPage() {
               ...saved,
               price: Number(saved.price ?? saved.cost ?? def.price) || 0,
               active: saved.active ?? saved.included ?? def.active,
+              billingCycle: saved.billingCycle ?? def.billingCycle ?? 'MONTHLY',
             };
           }
           return def;
@@ -868,29 +891,90 @@ export default function SuperPlansPage() {
                             setDirty(true);
                           }}
                           className="w-20 text-right text-xs font-bold text-slate-900 focus:outline-none bg-transparent"
-                          title="Precio mensual editable"
+                          title="Precio editable"
                         />
                       </div>
-                      <span className="text-[9px] text-slate-400 mt-0.5">COP / mes</span>
+
+                      {/* Selector de Modalidad: Mensual vs Pago Único */}
+                      <div className="flex items-center gap-1 mt-1.5 bg-slate-100 p-0.5 rounded-md border border-slate-200">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const updated = [...servicesList];
+                            updated[idx] = { ...srv, billingCycle: 'MONTHLY' };
+                            setServicesList(updated);
+                            setDirty(true);
+                          }}
+                          className={cn(
+                            'px-1.5 py-0.5 text-[9px] font-bold rounded transition-colors',
+                            srv.billingCycle !== 'ONE_TIME'
+                              ? 'bg-emerald-600 text-white shadow-2xs'
+                              : 'text-slate-500 hover:text-slate-800',
+                          )}
+                          title="Cobro recurrente mensual"
+                        >
+                          /mes
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const updated = [...servicesList];
+                            updated[idx] = { ...srv, billingCycle: 'ONE_TIME' };
+                            setServicesList(updated);
+                            setDirty(true);
+                          }}
+                          className={cn(
+                            'px-1.5 py-0.5 text-[9px] font-bold rounded transition-colors',
+                            srv.billingCycle === 'ONE_TIME'
+                              ? 'bg-indigo-600 text-white shadow-2xs'
+                              : 'text-slate-500 hover:text-slate-800',
+                          )}
+                          title="Pago único (Licencia permanente o setup inicial)"
+                        >
+                          Único
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))}
               </div>
 
-              {/* Barra de totalización de servicios y aplicación a mensualidad */}
-              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 p-3.5 rounded-xl bg-slate-900 text-white">
-                <div>
-                  <p className="text-xs font-medium text-slate-300">Total servicios mensuales seleccionados:</p>
-                  <p className="text-lg font-black text-emerald-400">{formatCOP(totalServicesCost)} <span className="text-xs text-slate-400 font-normal">COP/mes</span></p>
+              {/* Barra de totalización de servicios y aplicación */}
+              <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 p-3.5 rounded-xl bg-slate-900 text-white">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Recurrente Mensual:</p>
+                    <p className="text-base font-black text-emerald-400">
+                      {formatCOP(totalMonthlyServices)} <span className="text-xs text-slate-400 font-normal">COP/mes</span>
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Pago Único / Licencia:</p>
+                    <p className="text-base font-black text-indigo-300">
+                      {formatCOP(totalOneTimeServices)} <span className="text-xs text-slate-400 font-normal">COP</span>
+                    </p>
+                  </div>
                 </div>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs gap-1.5 w-full sm:w-auto"
-                  onClick={applyServicesToCloudFee}
-                >
-                  <Sparkles size={14} /> Aplicar a Mensualidad Cloud
-                </Button>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs gap-1.5 flex-1 sm:flex-initial cursor-pointer"
+                    onClick={applyServicesToCloudFee}
+                  >
+                    <Sparkles size={14} /> Aplicar a Mensualidad Cloud
+                  </Button>
+                  {totalOneTimeServices > 0 && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="bg-indigo-950/80 border-indigo-400/60 hover:bg-indigo-900 text-indigo-100 font-bold text-xs gap-1.5 flex-1 sm:flex-initial cursor-pointer"
+                      onClick={applyServicesToAppTotal}
+                    >
+                      <Sparkles size={14} /> Aplicar a Licencia Contado
+                    </Button>
+                  )}
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -1277,8 +1361,16 @@ export default function SuperPlansPage() {
             }
           } else {
             detalleWhatsApp = activeServices.length > 0
-              ? activeServices.map((s) => `• ${s.name}: ${formatCOP(s.price || 0)}`).join('\n')
+              ? activeServices
+                  .map(
+                    (s) =>
+                      `• ${s.name} [${s.billingCycle === 'ONE_TIME' ? 'Pago Único' : 'Mensual'}]: ${formatCOP(s.price || 0)}`,
+                  )
+                  .join('\n')
               : `• Mensualidad general de servicios Cloud: ${formatCOP(totalToPay)}`;
+            if (totalMonthlyServices > 0 && totalOneTimeServices > 0) {
+              detalleWhatsApp += `\n  - Subtotal Mensual: ${formatCOP(totalMonthlyServices)}\n  - Subtotal Pago Único: ${formatCOP(totalOneTimeServices)}`;
+            }
           }
 
           const invoiceTextWhatsApp = `📄 *PRESMON - CUENTA DE COBRO*\n` +
@@ -1396,12 +1488,34 @@ export default function SuperPlansPage() {
                     ) : activeServices.length === 0 ? (
                       <div className="p-2 text-slate-400 text-center">Mensualidad general de servicios</div>
                     ) : (
-                      activeServices.map((s) => (
-                        <div key={s.id} className="flex justify-between items-center p-2">
-                          <span className="text-slate-800 font-medium">{s.name}</span>
-                          <span className="font-bold text-slate-900">{formatCOP(s.price || 0)}</span>
-                        </div>
-                      ))
+                      <>
+                        {activeServices.map((s) => (
+                          <div key={s.id} className="flex justify-between items-center p-2">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-slate-800 font-medium">{s.name}</span>
+                              <Badge
+                                variant={s.billingCycle === 'ONE_TIME' ? 'info' : 'success'}
+                                className="text-[9px] px-1.5 py-0 font-semibold"
+                              >
+                                {s.billingCycle === 'ONE_TIME' ? 'Pago Único' : 'Mensual'}
+                              </Badge>
+                            </div>
+                            <span className="font-bold text-slate-900">{formatCOP(s.price || 0)}</span>
+                          </div>
+                        ))}
+                        {totalMonthlyServices > 0 && totalOneTimeServices > 0 && (
+                          <div className="p-2 bg-slate-50 space-y-1 text-[11px] text-slate-600 border-t border-slate-200">
+                            <div className="flex justify-between">
+                              <span>Subtotal mensual recurrente:</span>
+                              <span className="font-bold text-slate-800">{formatCOP(totalMonthlyServices)}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span>Subtotal pago único (licencia/setup):</span>
+                              <span className="font-bold text-slate-800">{formatCOP(totalOneTimeServices)}</span>
+                            </div>
+                          </div>
+                        )}
+                      </>
                     )}
                     <div className="flex justify-between items-center p-2.5 bg-slate-100 font-bold text-slate-900 text-sm">
                       <div>

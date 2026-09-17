@@ -2,7 +2,11 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
+  Activity,
   AlertTriangle,
+  ArrowUpRight,
+  BadgeCheck,
+  BarChart3,
   Building2,
   Check,
   CheckCircle,
@@ -11,6 +15,7 @@ import {
   Copy,
   CreditCard,
   DatabaseZap,
+  DollarSign,
   Eye,
   FileCode,
   Globe,
@@ -31,8 +36,10 @@ import {
   ShieldCheck,
   Smartphone,
   Trash2,
+  TrendingUp,
   UserX,
   Users,
+  Wallet,
   XCircle,
 } from 'lucide-react';
 import type {
@@ -100,6 +107,8 @@ export default function SuperAdminPage() {
   const auditLogs = useLiveQuery(() => db.audit_logs.toArray(), []);
   const loans = useLiveQuery(() => db.loans.toArray(), []);
   const plans = useLiveQuery(() => db.plans.toArray(), []);
+  const installments = useLiveQuery(() => db.installments.toArray(), []);
+  const borrowers = useLiveQuery(() => db.borrowers.toArray(), []);
 
   const latestAuditByTenant = useMemo(() => {
     const map = new Map<string, string>();
@@ -134,6 +143,7 @@ export default function SuperAdminPage() {
   const [wipeTarget, setWipeTarget] = useState<Tenant | null>(null);
   const [wiping, setWiping] = useState(false);
   const [wipeLockOrg, setWipeLockOrg] = useState(false);
+  const [wipeForceReissue, setWipeForceReissue] = useState(false);
 
   // Estados para Administrar Administradores y Sesiones
   const [adminManageTarget, setAdminManageTarget] = useState<Tenant | null>(null);
@@ -283,6 +293,129 @@ export default function SuperAdminPage() {
       isLive: false,
     };
   }
+
+  const [analyticsViewOpen, setAnalyticsViewOpen] = useState(true);
+
+  const globalMetrics = useMemo(() => {
+    const activeTenantsList = (tenants ?? []).filter((t) => t.status !== 'DELETED');
+    const tenantIdsSet = new Set(activeTenantsList.map((t) => t.tenantId));
+
+    // 1. Cobros e Ingresos de PresMon a las Organizaciones
+    let totalPlanContracted = 0;
+    let totalPlanCollected = 0;
+    let totalPlanOverdue = 0;
+    let tenantsInMoraCount = 0;
+
+    activeTenantsList.forEach((t) => {
+      const plan = planByTenant.get(t.tenantId);
+      if (!plan) return;
+      const invoice = computeMonthlyInvoice(plan);
+      if (invoice.isOverdueMoreThan5Days) tenantsInMoraCount++;
+      totalPlanOverdue += invoice.totalOverdueAmount;
+
+      if (plan.appPaymentMode === 'FULL') {
+        totalPlanContracted += Number(plan.appTotalAmount) || 0;
+      }
+      (plan.installments ?? []).forEach((inst) => {
+        totalPlanContracted += Number(inst.amount) || 0;
+        if (inst.status === 'PAID') {
+          totalPlanCollected += Number(inst.amount) || 0;
+        } else {
+          totalPlanCollected += Number(inst.paidAmount) || 0;
+        }
+      });
+    });
+
+    const totalPlanPending = Math.max(0, totalPlanContracted - totalPlanCollected);
+
+    // 2. Operación Global de Préstamos (Cartera en calle de las Organizaciones)
+    const validLoans = (loans ?? []).filter((l) => tenantIdsSet.has(l.tenantId) && l.status !== 'DELETED');
+    const validInstallments = (installments ?? []).filter((i) => tenantIdsSet.has(i.tenantId));
+    
+    const totalLoansPrincipal = validLoans.reduce((sum, l) => sum + (Number(l.principalAmount) || 0), 0);
+    const totalLoansPaid = validInstallments.reduce((sum, i) => sum + (Number(i.paidAmount) || 0), 0);
+    const totalInstallmentsReceivable = validInstallments.reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
+    const totalLoansPending = Math.max(0, totalInstallmentsReceivable - totalLoansPaid);
+
+    // 3. Top Organizaciones con más Uso (Eventos de Auditoría)
+    const auditCountByTenant = new Map<string, number>();
+    (auditLogs ?? []).forEach((l) => {
+      if (!l.tenantId || !tenantIdsSet.has(l.tenantId)) return;
+      auditCountByTenant.set(l.tenantId, (auditCountByTenant.get(l.tenantId) ?? 0) + 1);
+    });
+
+    const topTenantsByUsage = [...activeTenantsList]
+      .map((t) => ({
+        tenant: t,
+        auditCount: auditCountByTenant.get(t.tenantId) ?? 0,
+        onlineInfo: getTenantOnlineInfo(t),
+      }))
+      .sort((a, b) => b.auditCount - a.auditCount)
+      .slice(0, 3);
+
+    // 4. Top Organizaciones con más Préstamos y Cartera
+    const loansByTenantMap = new Map<string, { count: number; totalAmount: number }>();
+    validLoans.forEach((l) => {
+      const prev = loansByTenantMap.get(l.tenantId) ?? { count: 0, totalAmount: 0 };
+      loansByTenantMap.set(l.tenantId, {
+        count: prev.count + 1,
+        totalAmount: prev.totalAmount + (Number(l.principalAmount) || 0),
+      });
+    });
+
+    const topTenantsByPortfolio = [...activeTenantsList]
+      .map((t) => {
+        const stats = loansByTenantMap.get(t.tenantId) ?? { count: 0, totalAmount: 0 };
+        return {
+          tenant: t,
+          loansCount: stats.count,
+          totalAmount: stats.totalAmount,
+        };
+      })
+      .sort((a, b) => b.totalAmount - a.totalAmount)
+      .slice(0, 3);
+
+    // 5. Organizaciones con Deuda Pendiente
+    const tenantsWithDebtList = activeTenantsList
+      .map((t) => {
+        const plan = planByTenant.get(t.tenantId);
+        const invoice = plan ? computeMonthlyInvoice(plan) : null;
+        let pendingApp = 0;
+        if (plan) {
+          (plan.installments ?? []).forEach((i) => {
+            if (i.status !== 'PAID') {
+              pendingApp += Math.max(0, (Number(i.amount) || 0) - (Number(i.paidAmount) || 0));
+            }
+          });
+        }
+        return {
+          tenant: t,
+          invoice,
+          pendingApp,
+          totalDue: (invoice?.totalInvoiceAmount ?? 0) + pendingApp,
+          isOverdue: invoice?.isOverdueMoreThan5Days ?? false,
+        };
+      })
+      .filter((item) => item.totalDue > 0)
+      .sort((a, b) => b.totalDue - a.totalDue)
+      .slice(0, 3);
+
+    return {
+      totalPlanContracted,
+      totalPlanCollected,
+      totalPlanPending,
+      totalPlanOverdue,
+      tenantsInMoraCount,
+      totalLoansPrincipal,
+      totalLoansPaid,
+      totalLoansPending,
+      validLoansCount: validLoans.length,
+      borrowersCount: (borrowers ?? []).filter((b) => tenantIdsSet.has(b.tenantId)).length,
+      topTenantsByUsage,
+      topTenantsByPortfolio,
+      tenantsWithDebtList,
+    };
+  }, [tenants, planByTenant, loans, installments, auditLogs, borrowers]);
 
   useEffect(() => {
     const tabParam = searchParams.get('tab');
@@ -570,6 +703,13 @@ export default function SuperAdminPage() {
 
   async function setAppLock(tenant: Tenant, locked: boolean) {
     if (!session) return;
+    if (tenant.appLocked === locked) {
+      toast(
+        `«${tenant.name}» ya se encuentra ${locked ? 'BLOQUEADA' : 'DESBLOQUEADA'}. No es necesario repetir la acción.`,
+        'info',
+      );
+      return;
+    }
     await saveTenant({
       ...tenant,
       appLocked: locked,
@@ -1163,17 +1303,22 @@ export default function SuperAdminPage() {
 
   async function handleDisconnectSession(tenant: Tenant) {
     if (!session) return;
-    const prevDevice = tenant.currentDeviceName || tenant.currentDeviceId || 'Desconocido';
+    const prevDevice = tenant.currentDeviceName || tenant.lastSeenDevice || tenant.currentDeviceId || 'Desconocido';
     const updated: Tenant = {
       ...tenant,
-      currentSessionId: crypto.randomUUID(), // Invalida el session ID anterior
+      currentSessionId: crypto.randomUUID(), // Invalida el session ID o tokens anteriores
       currentDeviceId: undefined,
       currentDeviceName: undefined,
       sessionStartedAt: undefined,
+      lastSeenOnlineAt: undefined,
+      offlineOnlineDetectedAt: undefined,
       updatedAt: new Date().toISOString(),
       syncStatus: 'PENDING',
     };
     await saveTenant(updated);
+    if (adminManageTarget?.tenantId === tenant.tenantId) {
+      setAdminManageTarget(updated);
+    }
     await logAudit({
       tenantId: tenant.tenantId,
       action: 'SESSION_KILLED_CONCURRENT',
@@ -1187,7 +1332,7 @@ export default function SuperAdminPage() {
       },
     });
     pushToCloud();
-    toast(`Sesión activa de «${tenant.name}» desconectada remotamente.`, 'success');
+    toast(`Sesión de «${tenant.name}» desconectada e invalidada remotamente.`, 'success');
   }
 
   async function handleDeleteAdminUser(user: UserAccount, tenant: Tenant) {
@@ -1384,12 +1529,204 @@ export default function SuperAdminPage() {
 
       {activeTab === 'tenants' && (
         <>
+          {/* Panel de Métricas y Estadísticas Globales */}
+          <div className="mb-6 rounded-2xl border border-slate-200 bg-gradient-to-b from-slate-50/80 via-white to-slate-50/50 p-4 sm:p-5 shadow-xs space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200/80 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-emerald-600 text-white shadow-xs">
+                  <Activity size={18} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black tracking-wide text-slate-900">
+                    Dashboard Global PresMon · Ingresos, Cartera y Actividad
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Monitoreo en tiempo real de ingresos por licencias, actividad de organizaciones y cartera colocada.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setAnalyticsViewOpen(!analyticsViewOpen)}
+                  className="text-xs gap-1.5 h-8 text-slate-600 hover:text-slate-900 border-slate-300 cursor-pointer"
+                >
+                  <BarChart3 size={13} /> {analyticsViewOpen ? 'Ocultar Analítica' : 'Ver Analítica Completa'}
+                  <ChevronDown size={13} className={cn('transition-transform duration-200', analyticsViewOpen ? 'rotate-180' : '')} />
+                </Button>
+              </div>
+            </div>
+
+            {/* Fila 1: Métricas de Ingresos de Plataforma y Cartera */}
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-3.5 shadow-2xs">
+                <div className="flex items-center justify-between text-emerald-700">
+                  <span className="text-[11px] font-bold uppercase tracking-wider">Recaudado Planes</span>
+                  <DollarSign size={16} />
+                </div>
+                <p className="mt-1 text-lg sm:text-xl font-black text-emerald-900">
+                  {formatCOP(globalMetrics.totalPlanCollected)}
+                </p>
+                <p className="text-[10px] text-emerald-700 font-medium mt-0.5">Pagos y abonos recibidos</p>
+              </div>
+
+              <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-3.5 shadow-2xs">
+                <div className="flex items-center justify-between text-amber-700">
+                  <span className="text-[11px] font-bold uppercase tracking-wider">Por Cobrar Planes</span>
+                  <Wallet size={16} />
+                </div>
+                <p className="mt-1 text-lg sm:text-xl font-black text-amber-900">
+                  {formatCOP(globalMetrics.totalPlanPending)}
+                </p>
+                <p className="text-[10px] text-amber-700 font-medium mt-0.5">Saldo pendiente de cuotas</p>
+              </div>
+
+              <div className="rounded-xl border border-red-200 bg-red-50/60 p-3.5 shadow-2xs">
+                <div className="flex items-center justify-between text-red-700">
+                  <span className="text-[11px] font-bold uppercase tracking-wider">Mora Exigible</span>
+                  <AlertTriangle size={16} />
+                </div>
+                <p className="mt-1 text-lg sm:text-xl font-black text-red-900">
+                  {formatCOP(globalMetrics.totalPlanOverdue)}
+                </p>
+                <p className="text-[10px] text-red-700 font-medium mt-0.5">
+                  {globalMetrics.tenantsInMoraCount} organización(es) &gt; 5 días
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-sky-200 bg-sky-50/60 p-3.5 shadow-2xs">
+                <div className="flex items-center justify-between text-sky-700">
+                  <span className="text-[11px] font-bold uppercase tracking-wider">Cartera en Calle</span>
+                  <TrendingUp size={16} />
+                </div>
+                <p className="mt-1 text-lg sm:text-xl font-black text-sky-900">
+                  {formatCOP(globalMetrics.totalLoansPrincipal)}
+                </p>
+                <p className="text-[10px] text-sky-700 font-medium mt-0.5">
+                  {globalMetrics.validLoansCount} préstamos · {globalMetrics.borrowersCount} clientes
+                </p>
+              </div>
+            </div>
+
+            {analyticsViewOpen && (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 pt-2">
+                {/* Ranking 1: Organizaciones con Más Uso / Actividad */}
+                <div className="rounded-xl border border-slate-200 bg-white p-3.5 space-y-2.5 shadow-2xs">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                    <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                      <Activity size={14} className="text-indigo-600" /> Top Uso de la App (Auditoría)
+                    </span>
+                    <Badge variant="info" className="text-[9px] px-1.5">Eventos</Badge>
+                  </div>
+                  {globalMetrics.topTenantsByUsage.length === 0 ? (
+                    <p className="text-xs text-slate-400 py-2 text-center">Sin actividad registrada</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {globalMetrics.topTenantsByUsage.map((item, i) => (
+                        <div key={item.tenant.tenantId} className="flex items-center justify-between p-2 rounded-lg bg-slate-50 border border-slate-100 text-xs">
+                          <div className="min-w-0 flex-1 pr-2">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-bold text-slate-400 text-[10px]">#{i + 1}</span>
+                              <p className="font-bold text-slate-900 truncate">{item.tenant.name}</p>
+                            </div>
+                            <div className="flex items-center gap-1 text-[10px] text-slate-500 mt-0.5">
+                              <span className="font-mono">{item.auditCount} eventos</span>
+                              <span>·</span>
+                              <span className="truncate">{item.tenant.lastSeenDevice || 'Web'}</span>
+                            </div>
+                          </div>
+                          <Badge variant={item.onlineInfo.badgeVariant} className="text-[9px] shrink-0 font-bold">
+                            {item.onlineInfo.text}
+                          </Badge>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Ranking 2: Organizaciones con Mayor Cartera / Préstamos */}
+                <div className="rounded-xl border border-slate-200 bg-white p-3.5 space-y-2.5 shadow-2xs">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                    <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                      <TrendingUp size={14} className="text-emerald-600" /> Mayor Cartera de Préstamos
+                    </span>
+                    <Badge variant="success" className="text-[9px] px-1.5">Capital</Badge>
+                  </div>
+                  {globalMetrics.topTenantsByPortfolio.length === 0 ? (
+                    <p className="text-xs text-slate-400 py-2 text-center">Sin préstamos activos</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {globalMetrics.topTenantsByPortfolio.map((item, i) => (
+                        <div key={item.tenant.tenantId} className="flex items-center justify-between p-2 rounded-lg bg-slate-50 border border-slate-100 text-xs">
+                          <div className="min-w-0 flex-1 pr-2">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-bold text-slate-400 text-[10px]">#{i + 1}</span>
+                              <p className="font-bold text-slate-900 truncate">{item.tenant.name}</p>
+                            </div>
+                            <p className="text-[10px] text-slate-500 mt-0.5 font-mono">
+                              {item.loansCount} crédito(s) colocados
+                            </p>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <p className="font-black text-emerald-700 text-xs">{formatCOP(item.totalAmount)}</p>
+                            <p className="text-[9px] text-slate-400">Total prestado</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Ranking 3: Organizaciones con Deuda Pendiente de Licencias / Cuotas */}
+                <div className="rounded-xl border border-slate-200 bg-white p-3.5 space-y-2.5 shadow-2xs">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                    <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                      <AlertTriangle size={14} className="text-amber-600" /> Deuda de Planes y Cuotas
+                    </span>
+                    <Badge variant="warning" className="text-[9px] px-1.5">Pendiente</Badge>
+                  </div>
+                  {globalMetrics.tenantsWithDebtList.length === 0 ? (
+                    <div className="p-3 text-center text-xs text-emerald-700 bg-emerald-50 rounded-lg font-medium">
+                      ✓ Todas las organizaciones están al día con sus planes
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {globalMetrics.tenantsWithDebtList.map((item, i) => (
+                        <div key={item.tenant.tenantId} className={cn('flex items-center justify-between p-2 rounded-lg border text-xs', item.isOverdue ? 'bg-red-50/70 border-red-200' : 'bg-slate-50 border-slate-100')}>
+                          <div className="min-w-0 flex-1 pr-2">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-bold text-slate-400 text-[10px]">#{i + 1}</span>
+                              <p className="font-bold text-slate-900 truncate">{item.tenant.name}</p>
+                              {item.isOverdue && (
+                                <Badge variant="danger" className="text-[8px] px-1 py-0 font-bold shrink-0">MORA &gt; 5d</Badge>
+                              )}
+                            </div>
+                            <p className="text-[10px] text-slate-500 mt-0.5">
+                              {item.invoice?.summaryText || 'Cuotas pendientes'}
+                            </p>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <p className={cn('font-black text-xs', item.isOverdue ? 'text-red-700' : 'text-amber-800')}>
+                              {formatCOP(item.totalDue)}
+                            </p>
+                            <p className="text-[9px] text-slate-400">Por pagar</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatCard label="Organizaciones" value={String(stats.total)} icon={Building2} />
-        <StatCard label="Activas" value={String(stats.active)} icon={ShieldCheck} tone="emerald" />
-        <StatCard label="Portal habilitado" value={String(stats.portal)} icon={Globe} tone="sky" />
-        <StatCard label="Administradores" value={String(stats.admins)} icon={KeyRound} tone="amber" />
-      </div>
+            <StatCard label="Organizaciones" value={String(stats.total)} icon={Building2} />
+            <StatCard label="Activas" value={String(stats.active)} icon={ShieldCheck} tone="emerald" />
+            <StatCard label="Portal habilitado" value={String(stats.portal)} icon={Globe} tone="sky" />
+            <StatCard label="Administradores" value={String(stats.admins)} icon={KeyRound} tone="amber" />
+          </div>
 
       <h2 className="mt-6 mb-2 font-semibold text-slate-700">Tenants registrados</h2>
       <TableWrap>
@@ -2635,15 +2972,58 @@ export default function SuperAdminPage() {
               </li>
             </ul>
           </div>
+          {/* Feedback de ejecución previa: Purga ya confirmada */}
           {wipeTarget?.wipeConfirmedAt && (
-            <div className="rounded-lg bg-emerald-50 p-2.5 text-xs text-emerald-800 border border-emerald-200">
-              <p className="font-semibold">✓ Última purga confirmada por dispositivo cliente:</p>
-              <p className="mt-0.5 font-mono">{formatDateTime(wipeTarget.wipeConfirmedAt)}</p>
-              {wipeTarget.wipeConfirmedDevice && (
-                <p className="text-[10px] text-emerald-600 truncate mt-0.5">
-                  Dispositivo: {wipeTarget.wipeConfirmedDevice}
-                </p>
-              )}
+            <div className="rounded-lg bg-emerald-50 p-3 text-xs text-emerald-900 border border-emerald-300 space-y-2">
+              <div className="flex items-center gap-2">
+                <BadgeCheck size={16} className="text-emerald-600 shrink-0" />
+                <p className="font-bold">Purga ya ejecutada y confirmada con éxito previamente</p>
+              </div>
+              <p className="text-[11px] text-emerald-800">
+                Esta organización ya ejecutó la purga el <strong className="font-mono">{formatDateTime(wipeTarget.wipeConfirmedAt)}</strong>
+                {wipeTarget.wipeConfirmedDevice ? ` en el equipo «${wipeTarget.wipeConfirmedDevice}»` : ''}.
+              </p>
+              <p className="text-[11px] text-emerald-700">
+                Los datos locales en el dispositivo cliente ya fueron eliminados. <strong>No es necesario volver a emitir la orden</strong> a menos que desees forzar una re-purga deliberada.
+              </p>
+              <label className="flex items-center gap-2 pt-1.5 border-t border-emerald-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={wipeForceReissue}
+                  onChange={(e) => setWipeForceReissue(e.target.checked)}
+                  className="h-4 w-4 rounded border-emerald-400 text-emerald-600"
+                />
+                <span className="font-bold text-[11px] text-emerald-950">
+                  Deseo re-emitir la orden de purga de todos modos
+                </span>
+              </label>
+            </div>
+          )}
+
+          {/* Feedback de ejecución previa: Purga pendiente de conexión */}
+          {wipeTarget?.wipeLocalData && !wipeTarget?.wipeConfirmedAt && (
+            <div className="rounded-lg bg-amber-50 p-3 text-xs text-amber-900 border border-amber-300 space-y-2">
+              <div className="flex items-center gap-2">
+                <Clock size={16} className="text-amber-600 shrink-0" />
+                <p className="font-bold">Orden remota de purga ya activa y en espera</p>
+              </div>
+              <p className="text-[11px] text-amber-800">
+                Ya existe una orden de purga enviada y pendiente de confirmación para «{wipeTarget?.name}». En cuanto cualquier dispositivo de esta organización se conecte a internet o abra la app, se purgará de forma automática.
+              </p>
+              <p className="text-[11px] text-amber-700">
+                <strong>No es necesario volver a enviarla</strong>, pero puedes confirmarlo si deseas renovar la solicitud.
+              </p>
+              <label className="flex items-center gap-2 pt-1.5 border-t border-amber-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={wipeForceReissue}
+                  onChange={(e) => setWipeForceReissue(e.target.checked)}
+                  className="h-4 w-4 rounded border-amber-400 text-amber-600"
+                />
+                <span className="font-bold text-[11px] text-amber-950">
+                  Deseo re-enviar la orden de purga de todos modos
+                </span>
+              </label>
             </div>
           )}
 
@@ -2669,12 +3049,23 @@ export default function SuperAdminPage() {
             operando la app de forma clandestina o desconectada.
           </p>
           <div className="flex justify-end gap-2 pt-2">
-            <Button variant="outline" disabled={wiping} onClick={() => setWipeTarget(null)}>
+            <Button
+              variant="outline"
+              disabled={wiping}
+              onClick={() => {
+                setWipeTarget(null);
+                setWipeForceReissue(false);
+              }}
+            >
               Cancelar
             </Button>
             <Button
               variant="destructive"
-              disabled={wiping}
+              disabled={
+                wiping ||
+                ((!!wipeTarget?.wipeConfirmedAt || (!!wipeTarget?.wipeLocalData && !wipeTarget?.wipeConfirmedAt)) &&
+                  !wipeForceReissue)
+              }
               onClick={() => void handleWipeTenantLocalData()}
             >
               <DatabaseZap size={14} /> {wiping ? 'Purgando datos…' : wipeLockOrg ? 'Confirmar purga y bloquear cuenta' : 'Confirmar purga offline'}
@@ -2947,8 +3338,7 @@ service cloud.firestore {
 
     match /audit_logs/{doc} {
       allow read: if true;
-      allow create: if hasValidTenantId() && request.resource.data.logId is string;
-      allow update: if false;
+      allow create, update: if request.resource.data.logId is string;
       allow delete: if true;
     }
 
@@ -3022,8 +3412,7 @@ service cloud.firestore {
 
     match /audit_logs/{doc} {
       allow read: if true;
-      allow create: if hasValidTenantId() && request.resource.data.logId is string;
-      allow update: if false;
+      allow create, update: if request.resource.data.logId is string;
       allow delete: if true;
     }
 
@@ -3127,33 +3516,88 @@ service cloud.firestore {
                 <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
                   <Smartphone size={14} className="text-slate-500" /> Sesión Remota en Dispositivo
                 </h4>
-                {adminManageTarget.currentSessionId ? (
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-white rounded-lg border border-emerald-200">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                        <p className="text-xs font-bold text-slate-900">
-                          {adminManageTarget.currentDeviceName || 'Dispositivo conectado'}
+                {(() => {
+                  const onlineInfo = getTenantOnlineInfo(adminManageTarget);
+                  const activeDevice = adminManageTarget.currentDeviceName || adminManageTarget.lastSeenDevice || adminManageTarget.offlineDeviceInfo || 'Dispositivo conectado';
+
+                  if (adminManageTarget.currentSessionId) {
+                    return (
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-white rounded-lg border border-emerald-200">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                            <p className="text-xs font-bold text-slate-900">{activeDevice}</p>
+                            <Badge variant="success" className="text-[10px] py-0 px-1.5 font-bold">Sesión Activa</Badge>
+                          </div>
+                          <p className="text-[11px] text-slate-500 mt-0.5">
+                            Iniciada: {adminManageTarget.sessionStartedAt ? formatDateTime(adminManageTarget.sessionStartedAt) : 'Sesión en curso'} · {onlineInfo.tooltip}
+                          </p>
+                        </div>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          className="gap-1.5 shrink-0 cursor-pointer"
+                          onClick={() => void handleDisconnectSession(adminManageTarget)}
+                        >
+                          <LogOut size={13} /> Forzar Desconexión Remota
+                        </Button>
+                      </div>
+                    );
+                  }
+
+                  if (onlineInfo.isLive) {
+                    return (
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-white rounded-lg border border-emerald-200">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                            <p className="text-xs font-bold text-slate-900">{activeDevice}</p>
+                            <Badge variant={onlineInfo.badgeVariant} className="text-[10px] py-0 px-1.5 font-bold">
+                              {onlineInfo.text}
+                            </Badge>
+                          </div>
+                          <p className="text-[11px] text-slate-500 mt-0.5">
+                            {onlineInfo.tooltip}
+                          </p>
+                        </div>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          className="gap-1.5 shrink-0 cursor-pointer"
+                          onClick={() => void handleDisconnectSession(adminManageTarget)}
+                        >
+                          <LogOut size={13} /> Forzar Desconexión Remota
+                        </Button>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-white rounded-lg border border-slate-200 text-xs text-slate-600">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="h-2 w-2 rounded-full bg-slate-300" />
+                          <p className="font-semibold text-slate-700">Equipo actualmente desconectado</p>
+                          <Badge variant="muted" className="text-[10px] py-0 px-1.5">Off-line</Badge>
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          {onlineInfo.text !== 'Sin registro'
+                            ? `Última actividad: ${onlineInfo.text} · ${onlineInfo.tooltip}`
+                            : 'Esta organización no ha registrado conexiones online.'}
                         </p>
                       </div>
-                      <p className="text-[11px] text-slate-500">
-                        Iniciada: {adminManageTarget.sessionStartedAt ? formatDateTime(adminManageTarget.sessionStartedAt) : 'Sesión activa'}
-                      </p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="gap-1.5 shrink-0 text-slate-600 hover:text-slate-900 cursor-pointer"
+                        onClick={() => void handleDisconnectSession(adminManageTarget)}
+                        title="Genera un nuevo identificador de sesión para invalidar cualquier sesión anterior si el equipo intenta reconectar"
+                      >
+                        <ShieldCheck size={13} /> Invalidar Tokens Previos
+                      </Button>
                     </div>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      className="gap-1.5 shrink-0"
-                      onClick={() => void handleDisconnectSession(adminManageTarget)}
-                    >
-                      <LogOut size={13} /> Forzar Desconexión Remota
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="p-3 bg-white rounded-lg border border-slate-200 text-xs text-slate-500">
-                    No hay sesión activa vinculada actualmente o el equipo está desconectado.
-                  </div>
-                )}
+                  );
+                })()}
               </div>
 
               {/* Sección 3: Reglas de Límite y Concurrencia */}

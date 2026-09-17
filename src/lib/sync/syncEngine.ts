@@ -107,7 +107,11 @@ export async function runSync(tenantId?: string): Promise<SyncResult> {
       if (pending.length > 0) {
         const { doc, setDoc } = await import('firebase/firestore');
         for (const record of pending) {
-          await setDoc(doc(fs, name, String(record[key])), sanitize({ ...record }));
+          const recSanitized = sanitize({ ...record });
+          if (name === 'audit_logs') {
+            recSanitized.tenantId = String(record.tenantId ?? '');
+          }
+          await setDoc(doc(fs, name, String(record[key])), recSanitized);
         }
         await table.bulkPut(pending.map((r) => ({ ...r, syncStatus: 'SYNCED' })));
         result.pushed += pending.length;
@@ -222,12 +226,13 @@ export async function runSync(tenantId?: string): Promise<SyncResult> {
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       if (
-        name === 'payment_reports' &&
+        (name === 'payment_reports' || name === 'audit_logs') &&
         (errMsg.toLowerCase().includes('permissions') ||
-          errMsg.toLowerCase().includes('permission-denied'))
+          errMsg.toLowerCase().includes('permission-denied') ||
+          errMsg.toLowerCase().includes('missing or insufficient permissions'))
       ) {
         console.warn(
-          '[Sync] payment_reports: Permisos aún no habilitados en Firestore (actualizar firestore.rules en consola de Firebase).',
+          `[Sync] ${name}: Permisos no configurados o restringidos en Firestore (actualizar firestore.rules).`,
         );
       } else {
         result.errors.push(`${name}: ${errMsg}`);
