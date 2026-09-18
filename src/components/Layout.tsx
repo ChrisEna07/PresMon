@@ -352,12 +352,21 @@ export default function Layout() {
     if (remote.data.wipeLocalData === true) {
       await reportPurgeConfirmation(session.tenantId);
       await wipeLocalTenantData(session.tenantId);
-      logout();
+      const isOrgBlocked = remote.data.appLocked === true && !remote.data.unlockedByAdmin;
+      if (remote.status !== 'ACTIVE' || isOrgBlocked) {
+        logout();
+        toast(
+          'Los datos locales de esta organización fueron borrados y la cuenta ha sido suspendida.',
+          'error',
+        );
+        navigate('/login', { replace: true });
+        return;
+      }
       toast(
-        'Los datos locales de esta organización fueron borrados por el Super Administrador.',
-        'error',
+        'Base local purgada por el Super Admin. Sincronizando con la nube...',
+        'info',
       );
-      navigate('/login', { replace: true });
+      void runSync(session.tenantId);
       return;
     }
 

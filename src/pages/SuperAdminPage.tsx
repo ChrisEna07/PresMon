@@ -12,6 +12,7 @@ import {
   CheckCircle,
   ChevronDown,
   Clock,
+  Cloud,
   Copy,
   CreditCard,
   DatabaseZap,
@@ -40,6 +41,8 @@ import {
   UserX,
   Users,
   Wallet,
+  Wifi,
+  WifiOff,
   XCircle,
 } from 'lucide-react';
 import type {
@@ -779,6 +782,69 @@ export default function SuperAdminPage() {
     } finally {
       setWiping(false);
     }
+  }
+
+  async function handleReactivateCloudSync(tenant: Tenant) {
+    if (!session) return;
+    const now = new Date().toISOString();
+    const updated: Tenant = {
+      ...tenant,
+      wipeLocalData: false,
+      wipeConfirmedAt: tenant.wipeConfirmedAt || now,
+      wipeConfirmedDevice: tenant.wipeConfirmedDevice || 'Super Admin (Manual)',
+      appLocked: false,
+      unlockedByAdmin: true,
+      updatedAt: now,
+      syncStatus: 'PENDING',
+    };
+    await saveTenant(updated);
+    await logAudit({
+      tenantId: tenant.tenantId,
+      action: 'TENANT_UPDATED',
+      actorId: session.userId,
+      actorName: session.displayName,
+      entityId: tenant.tenantId,
+      entityType: 'tenants',
+      payloadSnapshot: {
+        accion: 'REANUDAR_ACCESO_NUBE_Y_LIMPIAR_PURGA',
+        nombre: tenant.name,
+      },
+    });
+    pushToCloud();
+    toast(`Sincronización y acceso a la nube restaurados para «${tenant.name}».`, 'success');
+  }
+
+  async function toggleOfflineAccess(tenant: Tenant) {
+    if (!session) return;
+    const nextBlocked = !tenant.offlineBlocked;
+    const now = new Date().toISOString();
+    const updated: Tenant = {
+      ...tenant,
+      offlineBlocked: nextBlocked,
+      updatedAt: now,
+      syncStatus: 'PENDING',
+    };
+    await saveTenant(updated);
+    await logAudit({
+      tenantId: tenant.tenantId,
+      action: 'TENANT_UPDATED',
+      actorId: session.userId,
+      actorName: session.displayName,
+      entityId: tenant.tenantId,
+      entityType: 'tenants',
+      payloadSnapshot: {
+        campo: 'offlineBlocked',
+        valor: nextBlocked,
+        nombre: tenant.name,
+      },
+    });
+    pushToCloud();
+    toast(
+      nextBlocked
+        ? `Modo offline revocado para «${tenant.name}» (Se exigirá conexión a la nube).`
+        : `Modo offline habilitado para «${tenant.name}».`,
+      nextBlocked ? 'warning' : 'success',
+    );
   }
 
   async function togglePaymentBanner(t: Tenant) {
@@ -1773,9 +1839,16 @@ export default function SuperAdminPage() {
                         </Badge>
                       )}
                       {t.wipeLocalData && !t.wipeConfirmedAt && (
-                        <Badge variant="warning" className="animate-pulse">
-                          ⏳ PURGA PENDIENTE DE CLIENTE
-                        </Badge>
+                        <button
+                          type="button"
+                          onClick={() => void handleReactivateCloudSync(t)}
+                          title="Hacer clic para resolver purga y permitir sincronización con el cliente"
+                          className="cursor-pointer inline-flex"
+                        >
+                          <Badge variant="warning" className="animate-pulse hover:bg-amber-200 transition-colors">
+                            ⏳ PURGA PENDIENTE DE CLIENTE ↺
+                          </Badge>
+                        </button>
                       )}
                       {t.offlineLicense && t.offlineOnlineDetected && t.offlineOnlineDetectedAt && (
                         <Badge variant="warning" title={`Dispositivo: ${t.offlineDeviceInfo ?? ''}`}>
@@ -2062,8 +2135,20 @@ export default function SuperAdminPage() {
                 </button>
               </div>
 
-              {/* Grupo 3: Seguridad y Purga Offline */}
+              {/* Grupo 3: Seguridad, Purga y Sincronización Nube */}
               <div className="py-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionMenu(null);
+                    void handleReactivateCloudSync(t);
+                  }}
+                  className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-emerald-50/80 transition-colors text-left text-emerald-800 font-medium cursor-pointer"
+                >
+                  <Cloud size={14} className="text-emerald-600 shrink-0" />
+                  <span>Reanudar sincronización nube y limpiar purga</span>
+                </button>
+
                 <button
                   type="button"
                   onClick={() => {
@@ -2075,6 +2160,27 @@ export default function SuperAdminPage() {
                 >
                   <DatabaseZap size={14} className="text-amber-600 shrink-0" />
                   <span>Purgar base local y revocar offline</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionMenu(null);
+                    void toggleOfflineAccess(t);
+                  }}
+                  className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-slate-50 transition-colors text-left cursor-pointer"
+                >
+                  {t.offlineBlocked ? (
+                    <>
+                      <Wifi size={14} className="text-emerald-600 shrink-0" />
+                      <span>Restaurar permiso de modo offline</span>
+                    </>
+                  ) : (
+                    <>
+                      <WifiOff size={14} className="text-amber-600 shrink-0" />
+                      <span>Revocar modo offline (Solo nube)</span>
+                    </>
+                  )}
                 </button>
 
                 <button
@@ -3013,6 +3119,21 @@ export default function SuperAdminPage() {
               <p className="text-[11px] text-amber-700">
                 <strong>No es necesario volver a enviarla</strong>, pero puedes confirmarlo si deseas renovar la solicitud.
               </p>
+              <div className="pt-2 border-t border-amber-200">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="w-full text-emerald-800 border-emerald-400 bg-emerald-50 hover:bg-emerald-100 cursor-pointer font-bold text-xs"
+                  onClick={() => {
+                    if (wipeTarget) void handleReactivateCloudSync(wipeTarget);
+                    setWipeTarget(null);
+                  }}
+                >
+                  <Cloud size={13} className="mr-1.5 shrink-0" />
+                  Cancelar orden de purga y restaurar sincronización nube
+                </Button>
+              </div>
               <label className="flex items-center gap-2 pt-1.5 border-t border-amber-200 cursor-pointer">
                 <input
                   type="checkbox"

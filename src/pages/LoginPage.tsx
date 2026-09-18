@@ -63,7 +63,13 @@ export default function LoginPage() {
       navigate('/', { replace: true });
     } catch (err) {
       let message = err instanceof Error ? err.message : 'Error al iniciar sesión';
-      if (cloudMode && message.includes('Credenciales')) {
+      if (
+        cloudMode &&
+        (message.includes('Credenciales') ||
+          message.includes('locales') ||
+          message.includes('Organización no encontrada') ||
+          message.includes('datos locales'))
+      ) {
         try {
           await pullBootstrap();
           await login(username, password);
@@ -97,24 +103,33 @@ export default function LoginPage() {
                 <ShieldCheck size={12} /> Modo Super Admin
               </p>
             )}
+            {cloudMode && navigator.onLine && boot === 'ready' && (
+              <div className="mb-4 flex items-center justify-between gap-2 rounded-lg bg-emerald-50 px-3 py-1.5 text-[11px] font-medium text-emerald-800 border border-emerald-200">
+                <span className="inline-flex items-center gap-1.5 font-semibold">
+                  <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                  En línea · Nube Firestore
+                </span>
+                <span className="text-[10px] text-emerald-600">Sincronización activa</span>
+              </div>
+            )}
             {cloudMode && boot === 'syncing' && (
               <p className="mb-4 flex items-center gap-2 rounded-lg bg-sky-50 px-3 py-2 text-xs font-medium text-sky-700">
                 <RefreshCw size={12} className="animate-spin" />
-                Descargando cuentas desde la nube…
+                Sincronizando cuentas con la nube…
               </p>
             )}
             {cloudMode && boot === 'empty-cloud' && (
               <div className="mb-4 flex items-center justify-between gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
                 <span className="inline-flex items-center gap-1.5">
                   <CloudOff size={12} />
-                  No hay cuentas en la nube todavía
+                  Sin datos locales. Conexión a la nube disponible.
                 </span>
                 <button
                   type="button"
                   onClick={() => void bootstrap()}
                   className="cursor-pointer rounded-md bg-amber-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-amber-700"
                 >
-                  Reintentar
+                  Sincronizar
                 </button>
               </div>
             )}

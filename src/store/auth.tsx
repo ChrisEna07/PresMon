@@ -8,12 +8,13 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import type { Tenant, UserRole } from '../db/models';
+import type { Tenant, UserAccount, UserRole } from '../db/models';
 import { db, deleteTenantCascade, wipeLocalTenantData } from '../db/db';
 import { sha256Hex } from '../lib/crypto';
 import { logAudit } from '../lib/auditLogger';
-import { fetchRemoteTenant, isSyncConfigured, deepSanitize } from '../lib/sync/syncEngine';
+import { fetchRemoteTenant, isSyncConfigured, deepSanitize, runSync } from '../lib/sync/syncEngine';
 import { loadFirebaseConfig } from '../lib/sync/firebaseConfig';
+import { reportPurgeConfirmation } from '../lib/offlineTelemetry';
 import { uid } from '../lib/id';
 import { nowISO } from '../lib/format';
 
@@ -78,7 +79,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (username: string, password: string) => {
     const uname = username.trim().toLowerCase();
     if (!uname || !password) throw new Error('Ingresa usuario y contraseña.');
-    const user = await db.users.where('username').equals(uname).first();
+    let user = await db.users.where('username').equals(uname).first();
+
+    // Si la app no detecta el usuario en la base local (p. ej. tras purga o en dispositivo nuevo)
+    // y hay conexión con la nube, autentica directamente contra Firestore
+    if (!user && isSyncConfigured() && navigator.onLine) {
+      try {
+        const cfg = loadFirebaseConfig();
+        if (cfg) {
+          const { initializeApp, getApps } = await import('firebase/app');
+          const { getFirestore, collection, query, where, getDocs } = await import('firebase/firestore');
+          const fs = getFirestore(getApps()[0] ?? initializeApp(cfg));
+          const q = query(collection(fs, 'users'), where('username', '==', uname));
+          const snap = await getDocs(q);
+          if (!snap.empty) {
+            const foundUser = snap.docs[0].data() as UserAccount;
+            if (foundUser && foundUser.userId) {
+              await db.users.put({ ...foundUser, syncStatus: 'SYNCED' });
+              user = foundUser;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[Auth] Error buscando usuario en Firestore:', err);
+      }
+    }
+
     if (!user) throw new Error('Credenciales inválidas.');
     const hash = await sha256Hex(password);
     if (user.passHash !== hash) throw new Error('Credenciales inválidas.');
@@ -95,24 +121,59 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const now = nowISO();
 
     if (user.role === 'TENANT_ADMIN') {
+      let remoteTenantData: Record<string, unknown> | null = null;
       // Verificación autoritativa contra la nube
-      if (isSyncConfigured()) {
+      if (isSyncConfigured() && navigator.onLine) {
         const remote = await fetchRemoteTenant(user.tenantId);
-        if (remote && remote.found && remote.data?.wipeLocalData === true) {
-          await wipeLocalTenantData(user.tenantId).catch(() => undefined);
-          throw new Error('Los datos locales de esta organización fueron eliminados por el Super Administrador.');
-        }
         if (remote && (!remote.found || remote.status === 'DELETED')) {
           await deleteTenantCascade(user.tenantId).catch(() => undefined);
           throw new Error('Esta organización fue eliminada de la plataforma.');
         }
+        if (remote && remote.found && remote.data) {
+          remoteTenantData = remote.data;
+          // Si el Super Admin emitió orden remota de purga de datos locales
+          if (remote.data.wipeLocalData === true) {
+            await wipeLocalTenantData(user.tenantId).catch(() => undefined);
+            await reportPurgeConfirmation(user.tenantId).catch(() => undefined);
+
+            const isOrgBlocked = remote.data.appLocked === true && !remote.data.unlockedByAdmin;
+            if (remote.status !== 'ACTIVE' || isOrgBlocked) {
+              throw new Error('Los datos locales fueron eliminados y la organización se encuentra suspendida o bloqueada.');
+            }
+
+            // Purga local ejecutada y confirmada a la nube.
+            // Si la organización no está bloqueada en la nube, se preserva el usuario actual en Dexie para habilitar la sesión:
+            await db.users.put({ ...user, syncStatus: 'SYNCED' });
+          }
+        }
       }
-      const tenant = await db.tenants.get(user.tenantId);
+
+      let tenant = await db.tenants.get(user.tenantId);
+      // Si la base local no tiene el tenant pero tenemos los datos remotos de Firestore, hidratarlo localmente
+      if (!tenant && remoteTenantData) {
+        tenant = {
+          ...(remoteTenantData as unknown as Tenant),
+          wipeLocalData: false,
+          syncStatus: 'SYNCED',
+        };
+        await db.tenants.put(tenant);
+      }
       if (!tenant) throw new Error('Organización no encontrada o datos locales eliminados.');
+
       if (tenant.wipeLocalData) {
         await wipeLocalTenantData(user.tenantId).catch(() => undefined);
-        throw new Error('Los datos locales de esta organización fueron eliminados por el Super Administrador.');
+        if (isSyncConfigured() && navigator.onLine) {
+          await reportPurgeConfirmation(user.tenantId).catch(() => undefined);
+        }
+        tenant.wipeLocalData = false;
+        await db.tenants.put({ ...tenant, wipeLocalData: false, syncStatus: 'SYNCED' });
+        await db.users.put({ ...user, syncStatus: 'SYNCED' });
+        const isOrgBlocked = tenant.appLocked === true && !tenant.unlockedByAdmin;
+        if (tenant.status !== 'ACTIVE' || isOrgBlocked) {
+          throw new Error('Los datos locales fueron eliminados y el acceso está bloqueado.');
+        }
       }
+
       if (tenant.offlineBlocked && !navigator.onLine) {
         throw new Error('El modo offline para esta organización fue revocado por el Super Administrador. Se requiere conexión.');
       }
@@ -194,6 +255,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         sessionId,
       },
     });
+
+    // Sincronización inmediata con Firestore para traer clientes, préstamos y cuotas
+    if (isSyncConfigured() && navigator.onLine) {
+      void runSync(user.role === 'SUPER_ADMIN' ? undefined : user.tenantId).catch(() => undefined);
+    }
   }, []);
 
   const logout = useCallback(() => {
@@ -221,13 +287,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     // Verificación autoritativa contra la nube
-    if (isSyncConfigured()) {
+    if (isSyncConfigured() && navigator.onLine) {
       const remote = await fetchRemoteTenant(current.tenantId);
       if (remote && remote.found && remote.data?.wipeLocalData === true) {
         await wipeLocalTenantData(current.tenantId).catch(() => undefined);
-        localStorage.removeItem(SESSION_KEY);
-        setSession(null);
-        return 'org-deleted';
+        await reportPurgeConfirmation(current.tenantId).catch(() => undefined);
+
+        const isOrgBlocked = remote.data.appLocked === true && !remote.data.unlockedByAdmin;
+        if (remote.status !== 'ACTIVE' || isOrgBlocked) {
+          localStorage.removeItem(SESSION_KEY);
+          setSession(null);
+          return 'org-deleted';
+        }
+        // Si no está bloqueada, restauramos usuario y tenant en Dexie y re-sincronizamos desde Firestore
+        const u = await db.users.get(current.userId);
+        if (!u) {
+          await db.users.put({
+            userId: current.userId,
+            tenantId: current.tenantId,
+            role: current.role,
+            username: current.username,
+            displayName: current.displayName,
+            passHash: '',
+            active: true,
+            createdAt: nowISO(),
+            updatedAt: nowISO(),
+            syncStatus: 'SYNCED',
+          });
+        }
+        const t = remote.data as unknown as Tenant;
+        await db.tenants.put({ ...t, wipeLocalData: false, syncStatus: 'SYNCED' });
+        void runSync(current.tenantId).catch(() => undefined);
       }
       if (remote && (!remote.found || remote.status === 'DELETED')) {
         await deleteTenantCascade(current.tenantId).catch(() => undefined);
@@ -250,11 +340,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     const tenant = await db.tenants.get(current.tenantId);
-    if (!tenant || tenant.wipeLocalData) {
-      await wipeLocalTenantData(current.tenantId).catch(() => undefined);
+    if (!tenant) {
       localStorage.removeItem(SESSION_KEY);
       setSession(null);
       return 'org-deleted';
+    }
+    if (tenant.wipeLocalData) {
+      await wipeLocalTenantData(current.tenantId).catch(() => undefined);
+      if (isSyncConfigured() && navigator.onLine) {
+        await reportPurgeConfirmation(current.tenantId).catch(() => undefined);
+      }
+      tenant.wipeLocalData = false;
+      await db.tenants.put({ ...tenant, wipeLocalData: false, syncStatus: 'SYNCED' });
+      const isOrgBlocked = tenant.appLocked === true && !tenant.unlockedByAdmin;
+      if (tenant.status !== 'ACTIVE' || isOrgBlocked) {
+        localStorage.removeItem(SESSION_KEY);
+        setSession(null);
+        return 'org-deleted';
+      }
     }
     if (tenant.offlineBlocked && !navigator.onLine) {
       localStorage.removeItem(SESSION_KEY);
