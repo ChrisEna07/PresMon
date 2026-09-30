@@ -851,19 +851,49 @@ export default function SuperAdminPage() {
   async function togglePaymentBanner(t: Tenant) {
     if (!session) return;
     const nextState = !t.paymentBannerDeactivated;
+    const isActivating = !nextState;
     await saveTenant({
       ...t,
       paymentBannerDeactivated: nextState,
+      unlockedByAdmin: isActivating ? false : t.unlockedByAdmin,
       updatedAt: new Date().toISOString(),
       syncStatus: 'PENDING',
     });
     pushToCloud();
     toast(
-      nextState
-        ? `Banner insistente de cobro DESACTIVADO para «${t.name}».`
-        : `Banner insistente de cobro ACTIVADO para «${t.name}».`,
-      'info',
+      isActivating
+        ? `Cobro insistente ACTIVADO para «${t.name}». La app quedará suspendida en cobro hasta que pague.`
+        : `Cobro insistente desactivado para «${t.name}».`,
+      isActivating ? 'warning' : 'info',
     );
+  }
+
+  async function handleSavePaymentParams() {
+    if (!session || !bannerTenant) return;
+    const updated: Tenant = {
+      ...bannerTenant,
+      paymentWhatsAppPhone: paymentPhone.trim() || undefined,
+      paymentBannerDismissible: paymentDismissible,
+      unlockedByAdmin: paymentDismissible ? bannerTenant.unlockedByAdmin : false,
+      updatedAt: new Date().toISOString(),
+      syncStatus: 'PENDING',
+    };
+    await saveTenant(updated);
+    await logAudit({
+      tenantId: bannerTenant.tenantId,
+      action: 'TENANT_UPDATED',
+      actorId: session.userId,
+      actorName: session.displayName,
+      entityId: bannerTenant.tenantId,
+      entityType: 'tenants',
+      payloadSnapshot: {
+        campo: 'parametros_cobro',
+        descartable: paymentDismissible,
+        telefonoCobro: paymentPhone || CHRIZDEV_WHATSAPP_PHONE,
+      },
+    });
+    toast(`Parámetros de cobro insistente guardados para «${bannerTenant.name}».`, 'success');
+    pushToCloud();
   }
 
   async function sendNotice(e: FormEvent) {
@@ -1813,8 +1843,10 @@ export default function SuperAdminPage() {
             const plan = planByTenant.get(t.tenantId);
             const invoice = plan ? computeMonthlyInvoice(plan) : null;
             const hasMora5Days = invoice?.isOverdueMoreThan5Days ?? false;
+            const hasCobroInsistente = t.paymentBannerDeactivated !== true && (invoice?.totalInvoiceAmount ?? 0) > 0;
+            const isLockedByDebt = t.appLocked || (hasMora5Days && (!t.unlockedByAdmin || hasCobroInsistente)) || (hasCobroInsistente && !t.paymentBannerDismissible);
             return (
-              <TR key={t.tenantId} className={t.appLocked || (hasMora5Days && !t.unlockedByAdmin) ? 'bg-red-50/60' : undefined}>
+              <TR key={t.tenantId} className={isLockedByDebt ? 'bg-red-50/60' : undefined}>
                 <TD className="font-medium text-slate-800">
                   <div className="flex flex-col gap-0.5">
                     <div className="flex items-center gap-1.5 flex-wrap">
@@ -1822,13 +1854,16 @@ export default function SuperAdminPage() {
                       {t.appLocked && (
                         <span className="inline-flex items-center gap-1">
                           <Lock size={12} className="text-red-500" />
-                          <Badge variant="danger">BLOQUEADA</Badge>
+                          <Badge variant="danger">BLOQUEADA (MANUAL)</Badge>
                         </span>
                       )}
-                      {hasMora5Days && !t.appLocked && !t.unlockedByAdmin && (
+                      {hasMora5Days && !t.appLocked && (
                         <Badge variant="danger">MORA &gt; 5 DÍAS ({invoice?.maxDaysOverdue}d)</Badge>
                       )}
-                      {t.unlockedByAdmin && !t.appLocked && (
+                      {hasCobroInsistente && !t.appLocked && (
+                        <Badge variant="danger">COBRO INSISTENTE ({formatCOP(invoice?.totalInvoiceAmount ?? 0)})</Badge>
+                      )}
+                      {t.unlockedByAdmin && !t.appLocked && !hasCobroInsistente && (
                         <Badge variant="success">DESBLOQUEO ADMIN</Badge>
                       )}
                       {t.offlineBlocked && (
@@ -2494,7 +2529,7 @@ export default function SuperAdminPage() {
                   <Button
                     type="button"
                     className="w-full"
-                    onClick={handleSaveBannerNotice}
+                    onClick={handleSavePaymentParams}
                   >
                     <Check size={15} /> Guardar Parámetros de Cobro
                   </Button>

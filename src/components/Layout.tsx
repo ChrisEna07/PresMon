@@ -38,7 +38,8 @@ import {
   X,
 } from 'lucide-react';
 import { db, wipeLocalTenantData } from '../db/db';
-import type { BankAccountInfo, PaymentReport, Tenant } from '../db/models';
+import type { BankAccountInfo, PaymentReport, ServicePlan, Tenant } from '../db/models';
+import { loadFirebaseConfig } from '../lib/sync/firebaseConfig';
 import { useAuth } from '../store/auth';
 import { useOnline } from '../hooks/useOnline';
 import {
@@ -174,8 +175,9 @@ export default function Layout() {
     tenantRecord?.paymentWhatsAppPhone?.trim() || CHRIZDEV_WHATSAPP_DISPLAY;
 
   const isOverdueMoreThan5Days = monthlyInvoice.isOverdueMoreThan5Days;
+  const hasMoraDays = monthlyInvoice.maxDaysOverdue > 0;
+  const hasUnpaidInvoice = monthlyInvoice.totalInvoiceAmount > 0;
   const unlockedByAdmin = tenantRecord?.unlockedByAdmin === true;
-  const isAutoLockedForMora = isOverdueMoreThan5Days && !unlockedByAdmin;
 
   // Detección y vigencia de 15 días del abono de la organización
   const activeAbono = tenantRecord?.activeAbono;
@@ -187,23 +189,51 @@ export default function Layout() {
   const abonoDaysRemaining = activeAbono ? diffDays(todayStr(), activeAbono.graceUntil) : 0;
   const isAbonoGraceExpired = isAbonoActive && abonoDaysRemaining < 0;
 
-  const showMonthlyInvoiceBanner =
-    session?.role === 'TENANT_ADMIN' &&
-    monthlyInvoice.totalInvoiceAmount > 0 &&
-    (monthlyInvoice.maxDaysOverdue > 0 ||
-      bannerDismissedFor !== `${currentPlan?.planId}:${monthlyInvoice.totalInvoiceAmount}`);
-
-  // Persistencia de tiempo y cierre (X) configurado por Super Admin para el banner de cobro
+  // Persistencia de tiempo y cierre (X) configurado por Super Admin para el cobro
   const isPaymentBannerExpired =
     !!tenantRecord?.paymentBannerExpiresAt &&
     new Date(tenantRecord.paymentBannerExpiresAt).getTime() < Date.now();
   const isPaymentDismissible = tenantRecord?.paymentBannerDismissible === true;
 
-  const showInsistentPaymentBanner =
+  // Cobro Insistente: activo para organizaciones con deuda exigible mientras no esté desactivado expresamente
+  const isCobroInsistenteActive =
     session?.role === 'TENANT_ADMIN' &&
-    monthlyInvoice.totalInvoiceAmount > 0 &&
+    hasUnpaidInvoice &&
     tenantRecord?.paymentBannerDeactivated !== true &&
     !isPaymentBannerExpired &&
+    !isAbonoActive;
+
+  // Bloqueo estricto por cobro insistente o mora:
+  // 1. Si cobro insistente está activo y es inamovible (!isPaymentDismissible) o ya tiene días de mora acumulados.
+  // 2. Si tiene más de 5 días de mora (> 5 días o más de 1 mes) y el cobro insistente está encendido o no tiene exención.
+  // 3. Si el plazo de 15 días del abono expiró.
+  // 4. Si el Super Admin bloqueó la organización manualmente (appLocked === true).
+  const isLockedByCobroInsistente =
+    isCobroInsistenteActive &&
+    (!isPaymentDismissible || hasMoraDays || isOverdueMoreThan5Days);
+
+  const isAutoLockedForMora =
+    (isOverdueMoreThan5Days || (hasMoraDays && isCobroInsistenteActive)) &&
+    (!unlockedByAdmin || isCobroInsistenteActive);
+
+  const appLocked =
+    session?.role === 'TENANT_ADMIN' &&
+    (tenantRecord?.appLocked === true ||
+      isLockedByCobroInsistente ||
+      isAutoLockedForMora ||
+      (isAbonoGraceExpired && (!unlockedByAdmin || isCobroInsistenteActive)));
+
+  const showMonthlyInvoiceBanner =
+    session?.role === 'TENANT_ADMIN' &&
+    hasUnpaidInvoice &&
+    !appLocked &&
+    (hasMoraDays ||
+      bannerDismissedFor !== `${currentPlan?.planId}:${monthlyInvoice.totalInvoiceAmount}`);
+
+  const showInsistentPaymentBanner =
+    session?.role === 'TENANT_ADMIN' &&
+    isCobroInsistenteActive &&
+    !appLocked &&
     (!isPaymentDismissible || !paymentBannerDismissed);
 
   // Persistencia de tiempo y cierre (X) para los avisos/notices
@@ -220,10 +250,6 @@ export default function Layout() {
     activeNotice.message.trim() !== '' &&
     !isNoticeExpired &&
     (!isNoticeDismissible || noticeDismissedAt !== activeNotice.updatedAt);
-
-  const appLocked =
-    session?.role === 'TENANT_ADMIN' &&
-    (tenantRecord?.appLocked === true || isAutoLockedForMora || (isAbonoGraceExpired && !unlockedByAdmin));
 
   function handleOpenReportModal(customAmount?: number | unknown) {
     const defaultAmount =
@@ -416,6 +442,30 @@ export default function Layout() {
       updatedAt: String(remote.data.updatedAt ?? local.updatedAt),
       syncStatus: 'SYNCED',
     });
+
+    // Sincronización en caliente del plan de servicio de la organización desde Firestore para mantener cuotas y mora al día
+    try {
+      const cfg = loadFirebaseConfig();
+      if (cfg) {
+        const { initializeApp, getApps } = await import('firebase/app');
+        const { getFirestore, collection, query, where, getDocs } = await import('firebase/firestore');
+        const fs = getFirestore(getApps()[0] ?? initializeApp(cfg));
+        const planSnap = await getDocs(
+          query(collection(fs, 'plans'), where('tenantId', '==', session.tenantId)),
+        );
+        for (const docSnap of planSnap.docs) {
+          const remotePlan = docSnap.data() as ServicePlan;
+          if (remotePlan && remotePlan.planId) {
+            const localPlan = await db.plans.get(remotePlan.planId);
+            if (!localPlan || String(remotePlan.updatedAt ?? '') >= String(localPlan.updatedAt ?? '')) {
+              await db.plans.put({ ...remotePlan, syncStatus: 'SYNCED' });
+            }
+          }
+        }
+      }
+    } catch {
+      /* silencio en fallos transitorios de red */
+    }
   }
 
   // Telemetría para edición offline y confirmación de purga si detecta red
@@ -881,15 +931,19 @@ export default function Layout() {
               <h2 className="text-xl font-bold text-white">
                 {isAbonoGraceExpired
                   ? 'Servicio suspendido: Plazo de abono vencido'
+                  : isOverdueMoreThan5Days
+                  ? `Servicio suspendido por mora (${monthlyInvoice.maxDaysOverdue} días)`
+                  : isLockedByCobroInsistente
+                  ? 'Cobro exigible: Servicio suspendido'
                   : isAutoLockedForMora
-                  ? 'Servicio suspendido por mora (> 5 días)'
+                  ? 'Servicio suspendido por falta de pago'
                   : 'Servicio suspendido'}
               </h2>
               <p className="mt-2 text-sm leading-relaxed text-slate-300">
                 {isAbonoGraceExpired
                   ? `Excediste el plazo de 15 días concedido tras tu abono para pagar el saldo restante de ${formatCOP(activeAbono?.remainingAmount || 0)}. Tu cuenta ha sido suspendida automáticamente hasta completar el pago.`
-                  : isAutoLockedForMora
-                  ? `Tienes ${monthlyInvoice.maxDaysOverdue} días de vencimiento en tu factura mensual con ChrizDev. Para proteger la plataforma, tus operaciones están bloqueadas hasta que realices el pago o hasta que el Super Administrador desbloquee tu cuenta.`
+                  : isOverdueMoreThan5Days || isLockedByCobroInsistente || isAutoLockedForMora
+                  ? `Tu organización registra una factura exigible por ${formatCOP(monthlyInvoice.totalInvoiceAmount)}${monthlyInvoice.maxDaysOverdue > 0 ? ` con ${monthlyInvoice.maxDaysOverdue} días de mora acumulados` : ''}. El sistema de cobro ha suspendido las operaciones de la app hasta que realices el pago o envíes tu comprobante.`
                   : 'El acceso a PresMon está bloqueado por decisión del Super Administrador. Tus datos están a salvo y se restituirá el acceso inmediatamente después de ponerte al día.'}
               </p>
               {monthlyInvoice.totalInvoiceAmount > 0 && (
@@ -1297,7 +1351,7 @@ export default function Layout() {
               </div>
             </div>
           )}
-          <Outlet />
+          {appLocked ? null : <Outlet />}
         </main>
       </div>
 

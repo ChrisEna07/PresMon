@@ -205,7 +205,7 @@ export default function ClientPortalPage() {
               const snap = await getDoc(doc(fs, 'tenants', linkedTenantId));
               const data = snap.exists() ? (snap.data() as unknown as Tenant) : null;
               const rows =
-                data && data.tenantId && data.clientPortalEnabled && data.status === 'ACTIVE'
+                data && data.tenantId && data.clientPortalEnabled && data.status === 'ACTIVE' && !data.appLocked
                   ? [data]
                   : [];
               setPortalTenants(rows);
@@ -217,7 +217,7 @@ export default function ClientPortalPage() {
             const snap = await getDocs(query(collection(fs, 'tenants'), where('status', '==', 'ACTIVE')));
             const rows = snap.docs
               .map((d) => d.data() as unknown as Tenant)
-              .filter((t) => t.tenantId && t.clientPortalEnabled);
+              .filter((t) => t.tenantId && t.clientPortalEnabled && !t.appLocked);
             setPortalTenants(rows);
             setSourceNote('Consultando en tiempo real desde la nube');
             return;
@@ -226,7 +226,7 @@ export default function ClientPortalPage() {
           /* sin conexión: se usa la copia local */
         }
       }
-      const localActive = (localTenants ?? []).filter((t) => t.clientPortalEnabled);
+      const localActive = (localTenants ?? []).filter((t) => t.clientPortalEnabled && !t.appLocked);
       const rows = linkedTenantId
         ? localActive.filter((t) => t.tenantId === linkedTenantId)
         : localActive;

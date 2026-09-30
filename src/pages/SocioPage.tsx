@@ -589,6 +589,31 @@ export default function SocioPage() {
     );
   }
 
+  if (tenant && (tenant.status !== 'ACTIVE' || tenant.appLocked === true)) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-slate-900 p-4 text-center">
+        <div className="max-w-md rounded-2xl bg-slate-800 p-6 border border-red-500/30 shadow-2xl space-y-4">
+          <div className="h-12 w-12 rounded-full bg-red-500/20 text-red-400 flex items-center justify-center mx-auto">
+            <ShieldAlert size={28} />
+          </div>
+          <h2 className="text-lg font-bold text-white">Servicio Suspendido</h2>
+          <p className="text-xs leading-relaxed text-slate-300 bg-red-950/40 p-3 rounded-xl border border-red-800/40 text-left">
+            La organización «{tenant.name}» se encuentra suspendida o bloqueada por la administración de la plataforma. La ruta de cobro no está disponible temporalmente.
+          </p>
+          <div className="pt-2">
+            <Button
+              variant="outline"
+              className="w-full text-xs border-slate-700 text-slate-300 hover:bg-slate-700"
+              onClick={() => navigate('/login')}
+            >
+              Cerrar Módulo
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
       {/* Cabecera Móvil del Socio */}
