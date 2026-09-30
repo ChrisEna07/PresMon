@@ -175,7 +175,9 @@ export default function RequestsPage() {
       filter === 'ALL' ? [...list] : list.filter((r) => r.status === filter);
     const order: Record<LoanRequest['status'], number> = { PENDING: 0, APPROVED: 1, REJECTED: 2 };
     return rows.sort(
-      (a, b) => order[a.status] - order[b.status] || b.createdAt.localeCompare(a.createdAt),
+      (a, b) =>
+        order[a.status] - order[b.status] ||
+        String(b.createdAt || '').localeCompare(String(a.createdAt || '')),
     );
   }, [list, filter]);
 

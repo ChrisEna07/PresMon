@@ -86,6 +86,7 @@ export async function reportPurgeConfirmation(tenantId: string): Promise<boolean
       deepSanitize({
         logId: uid(),
         tenantId,
+        timestamp: confirmedAt,
         action: 'OFFLINE_WIPE_CONFIRMED',
         actorId: 'system-client',
         actorName: 'Dispositivo Cliente',
@@ -175,6 +176,7 @@ export async function checkOfflineTelemetry(tenantId: string): Promise<Telemetry
         deepSanitize({
           logId: uid(),
           tenantId,
+          timestamp: detectedAt,
           action: 'OFFLINE_ONLINE_DETECTED',
           actorId: 'offline-client',
           actorName: 'App Edición Offline',

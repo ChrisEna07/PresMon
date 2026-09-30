@@ -80,7 +80,7 @@ export default function LoansPage() {
       if (filter === 'paid') return l.status === 'PAID';
       if (filter === 'cancelled') return l.status === 'CANCELLED';
       return true;
-    }).sort((a, b) => b.startDate.localeCompare(a.startDate));
+    }).sort((a, b) => String(b.startDate || '').localeCompare(String(a.startDate || '')));
   }, [loans, filter]);
 
   async function cancelLoan() {

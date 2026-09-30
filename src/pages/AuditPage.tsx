@@ -89,11 +89,23 @@ export default function AuditPage() {
       if (!session) return [] as AuditLog[];
       if (tenantScope !== null && tenantScope !== '') {
         const rows = await db.audit_logs.where('tenantId').equals(tenantScope).toArray();
-        return rows.sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, 300);
+        return rows
+          .map((r) => ({
+            ...r,
+            timestamp: r.timestamp || r.createdAt || r.updatedAt || new Date().toISOString(),
+          }))
+          .sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)))
+          .slice(0, 300);
       }
       if (isSuper) {
         const rows = await db.audit_logs.toArray();
-        return rows.sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, 600);
+        return rows
+          .map((r) => ({
+            ...r,
+            timestamp: r.timestamp || r.createdAt || r.updatedAt || new Date().toISOString(),
+          }))
+          .sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)))
+          .slice(0, 600);
       }
       return [] as AuditLog[];
     },
@@ -146,7 +158,7 @@ export default function AuditPage() {
   function exportCSV() {
     const header = ['fecha', 'organizacion', 'accion', 'actor', 'entidad', 'detalle'];
     const lines = filtered.map((l) => [
-      l.timestamp,
+      l.timestamp || l.createdAt || '',
       `"${(tenantNameById.get(l.tenantId) ?? 'Plataforma').replace(/"/g, "'")}"`,
       l.action,
       l.actorName,
@@ -281,7 +293,9 @@ export default function AuditPage() {
                 <div className="flex-1 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                   <div className="flex flex-wrap items-center justify-between gap-1">
                     <p className="text-sm font-semibold text-slate-800">{ACTION_LABELS[log.action]}</p>
-                    <span className="text-[11px] text-slate-400">{formatDateTime(log.timestamp)}</span>
+                    <span className="text-[11px] text-slate-400">
+                      {formatDateTime(log.timestamp || log.createdAt || log.updatedAt)}
+                    </span>
                   </div>
                   <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
                     {log.actorName}
@@ -299,7 +313,13 @@ export default function AuditPage() {
                         Ver datos completos
                       </summary>
                       <pre className="mt-1 max-h-40 overflow-auto rounded-lg bg-slate-50 p-2 text-[10px] whitespace-pre-wrap text-slate-500">
-                        {JSON.stringify(JSON.parse(log.payloadSnapshot), null, 2)}
+                        {(() => {
+                          try {
+                            return JSON.stringify(JSON.parse(log.payloadSnapshot), null, 2);
+                          } catch {
+                            return String(log.payloadSnapshot);
+                          }
+                        })()}
                       </pre>
                     </details>
                   )}
