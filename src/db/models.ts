@@ -26,6 +26,9 @@ export type AuditAction =
   | 'TENANT_DELETED'
   | 'PLAN_UPDATED'
   | 'PLAN_INSTALLMENT_ABONO'
+  | 'PLAN_CLOUD_PAID'
+  | 'PLAN_INSTALLMENT_EDITED'
+  | 'PLAN_INSTALLMENT_CANCELLED'
   | 'DATA_EXPORTED'
   | 'SYNC_COMPLETED'
   | 'SYNC_CONFLICT'
@@ -233,7 +236,7 @@ export interface UserAccount extends BaseRecord {
   active: boolean;
 }
 
-export type PlanInstallmentStatus = 'PENDING' | 'PAID';
+export type PlanInstallmentStatus = 'PENDING' | 'PAID' | 'CANCELLED';
 
 export interface PlanInstallment {
   installmentId: string;
@@ -248,6 +251,10 @@ export interface PlanInstallment {
   lastAbonoAt?: string;
   /** Fecha límite de vigencia de 15 días concedida tras el abono. */
   graceUntil?: string;
+  /** Fecha ISO de anulación (si la cuota fue cancelada sin borrarla). */
+  cancelledAt?: string;
+  /** Justificación o motivo de la anulación contable de la cuota. */
+  cancelReason?: string;
 }
 
 /** Modo de pago de la licencia de la app. */
@@ -264,6 +271,24 @@ export interface PlanServiceItem {
   description: string;
   /** Modalidad de cobro: recurrente mensual o pago único (licencia / setup) */
   billingCycle?: 'MONTHLY' | 'ONE_TIME';
+  /** Indica si es un costo o servicio personalizado agregado por el Super Admin */
+  isCustom?: boolean;
+  /** Justificación obligatoria del por qué de este costo o a base de qué */
+  justification?: string;
+}
+
+/** Registro histórico inmutable de un pago o abono recibido para el plan. */
+export interface PlanPaymentRecord {
+  id: string;
+  date: string;
+  amount: number;
+  concept: string;
+  type: 'ABONO' | 'TOTAL' | 'CLOUD' | 'ADJUSTMENT';
+  installmentId?: string;
+  registeredBy?: string;
+  paymentMethod?: string;
+  reference?: string;
+  notes?: string;
 }
 
 export interface ServicePlan extends BaseRecord {
@@ -285,6 +310,10 @@ export interface ServicePlan extends BaseRecord {
   cloudBillingDay?: number;
   /** Fecha (YYYY-MM-DD) hasta la cual está pagada la mensualidad cloud. */
   cloudPaidThrough?: string;
+  /** Fecha de inicio del servicio cloud (por defecto la fecha de creación de la cuenta u organización). */
+  cloudStartDate?: string;
+  /** Historial cronológico de pagos y abonos registrados con trazabilidad para auditoría. */
+  paymentsHistory?: PlanPaymentRecord[];
   notes?: string;
   installments: PlanInstallment[];
   /** Catálogo de servicios base y add-ons seleccionados con su costo individual. */

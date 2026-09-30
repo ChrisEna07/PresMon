@@ -2,8 +2,10 @@ import { useMemo, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
+  AlertCircle,
   ArrowUpRight,
   BadgeCheck,
+  Ban,
   Building2,
   Calculator,
   CalendarPlus,
@@ -12,17 +14,19 @@ import {
   CreditCard,
   FileText,
   HandCoins,
+  History,
   Megaphone,
   MessageCircle,
+  Pencil,
   Plus,
   Printer,
+  Receipt,
   Save,
   ShieldCheck,
   Sparkles,
-  Trash2,
   Wallet,
 } from 'lucide-react';
-import type { AppPaymentMode, PlanInstallment, PlanServiceItem, ServicePlan, Tenant } from '../db/models';
+import type { AppPaymentMode, PlanInstallment, PlanPaymentRecord, PlanServiceItem, ServicePlan, Tenant } from '../db/models';
 import { db, nowISO } from '../db/db';
 import { useAuth } from '../store/auth';
 import { uid } from '../lib/id';
@@ -105,8 +109,31 @@ export default function SuperPlansPage() {
   const [abonoTargetRow, setAbonoTargetRow] = useState<PlanInstallment | null>(null);
   const [abonoAmount, setAbonoAmount] = useState('');
   const [abonoGrace15Days, setAbonoGrace15Days] = useState(true);
+  const [abonoReference, setAbonoReference] = useState('');
+  const [abonoPaymentMethod, setAbonoPaymentMethod] = useState('Transferencia Bancaria');
   const [abonoNotes, setAbonoNotes] = useState('');
   const [savingAbono, setSavingAbono] = useState(false);
+
+  // Modal para Editar Cuota (Ajuste de cobros / Corrección contable)
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [editTargetRow, setEditTargetRow] = useState<PlanInstallment | null>(null);
+  const [editConcept, setEditConcept] = useState('');
+  const [editDueDate, setEditDueDate] = useState('');
+  const [editAmount, setEditAmount] = useState('');
+  const [editReason, setEditReason] = useState('');
+
+  // Modal para Anular Cuota (Sin borrado físico de la transacción)
+  const [cancelModalOpen, setCancelModalOpen] = useState(false);
+  const [cancelTargetRow, setCancelTargetRow] = useState<PlanInstallment | null>(null);
+  const [cancelReason, setCancelReason] = useState('');
+
+  // Modal para Agregar Costo o Servicio Personalizado con Justificación Obligatoria
+  const [customServiceModalOpen, setCustomServiceModalOpen] = useState(false);
+  const [customServiceName, setCustomServiceName] = useState('');
+  const [customServicePrice, setCustomServicePrice] = useState('');
+  const [customServiceCycle, setCustomServiceCycle] = useState<'MONTHLY' | 'ONE_TIME'>('MONTHLY');
+  const [customServiceJustification, setCustomServiceJustification] = useState('');
+  const [customServiceDesc, setCustomServiceDesc] = useState('');
 
   const planByTenant = useMemo(() => {
     const map = new Map<string, ServicePlan>();
@@ -159,7 +186,7 @@ export default function SuperPlansPage() {
     [cloudBillingDay, paidThroughDate],
   );
 
-  /** Marca el ciclo actual de la mensualidad cloud como pagado. */
+  /** Marca el ciclo actual de la mensualidad cloud como pagado y registra la transacción contable. */
   async function markCloudPeriodPaid() {
     if (!tenantId) return;
     if (!existingPlanForOrg) {
@@ -167,12 +194,44 @@ export default function SuperPlansPage() {
       return;
     }
     const due = nextMonthlyDue(Number(cloudBillingDay) || 1, existingPlanForOrg.cloudPaidThrough);
+    const amountVal = Number(existingPlanForOrg.cloudMonthlyFee) || 0;
+    const now = nowISO();
+
+    const paymentRecord: PlanPaymentRecord = {
+      id: uid(),
+      date: today,
+      amount: amountVal,
+      concept: `Mensualidad Cloud (Ciclo pagado hasta el ${formatDateShort(due)})`,
+      type: 'CLOUD',
+      paymentMethod: 'Transferencia Bancaria',
+      registeredBy: session?.displayName || 'Super Admin',
+      notes: 'Pago mensual recurrente de infraestructura cloud y sincronización',
+    };
+
+    const updatedHistory = [...(existingPlanForOrg.paymentsHistory ?? []), paymentRecord];
+
     await db.plans.put({
       ...existingPlanForOrg,
       cloudPaidThrough: due,
-      updatedAt: nowISO(),
+      paymentsHistory: updatedHistory,
+      updatedAt: now,
       syncStatus: 'PENDING',
     });
+
+    await logAudit({
+      tenantId,
+      action: 'PLAN_CLOUD_PAID',
+      actorId: session?.userId || 'superadmin',
+      actorName: session?.displayName || 'Super Admin',
+      entityId: existingPlanForOrg.planId,
+      entityType: 'plans',
+      payloadSnapshot: {
+        organizacion: selectedTenant?.name ?? tenantId,
+        cicloPagadoHasta: due,
+        monto: amountVal,
+      },
+    });
+
     pushToCloud();
     setDirty(true);
     toast(`Mensualidad registrada como pagada hasta el ${formatDateShort(due)}.`, 'success');
@@ -181,11 +240,16 @@ export default function SuperPlansPage() {
   function selectOrg(id: string) {
     setTenantId(id);
     const existing = id ? planByTenant.get(id) : undefined;
+    const t = id ? (tenants ?? []).find((x) => x.tenantId === id) : undefined;
+    const regDay = t?.createdAt && t.createdAt.length >= 10
+      ? Math.min(28, Math.max(1, parseInt(t.createdAt.slice(8, 10), 10) || 1))
+      : 1;
+
     setName(existing?.name ?? '');
     setPayMode(existing?.appPaymentMode ?? 'INSTALLMENTS');
     setAppTotal(existing?.appTotalAmount != null ? String(existing.appTotalAmount) : '');
     setCloudFee(existing?.cloudMonthlyFee != null ? String(existing.cloudMonthlyFee) : '');
-    setCloudBillingDay(String(Number(existing?.cloudBillingDay) || 1));
+    setCloudBillingDay(String(Number(existing?.cloudBillingDay) || regDay));
     setCloudIncluded(existing?.cloudServiceIncluded ?? true);
     setNotes(existing?.notes ?? '');
     setRows(
@@ -216,23 +280,22 @@ export default function SuperPlansPage() {
 
     if (existing?.services && existing.services.length > 0) {
       const map = new Map(existing.services.map((s) => [s.id, s]));
-      setServicesList(
-        DEFAULT_PLAN_SERVICES.map((def) => {
-          const saved = map.get(def.id);
-          if (saved) {
-            return {
-              ...def,
-              ...saved,
-              price: Number(saved.price ?? saved.cost ?? def.price) || 0,
-              active: saved.active ?? saved.included ?? def.active,
-              billingCycle: saved.billingCycle ?? def.billingCycle ?? 'MONTHLY',
-            };
-          }
-          return def;
-        }),
-      );
+      const defaults = DEFAULT_PLAN_SERVICES.map((def) => {
+        const saved = map.get(def.id);
+        if (saved) {
+          return {
+            ...def,
+            ...saved,
+            price: Number(saved.price ?? saved.cost ?? def.price) || 0,
+            active: saved.active ?? saved.included ?? def.active,
+            billingCycle: saved.billingCycle ?? def.billingCycle ?? 'MONTHLY',
+          };
+        }
+        return def;
+      });
+      const customServices = existing.services.filter((s) => s.isCustom || !DEFAULT_PLAN_SERVICES.some((d) => d.id === s.id));
+      setServicesList([...defaults, ...customServices]);
     } else {
-      const t = (tenants ?? []).find((x) => x.tenantId === id);
       setServicesList(
         DEFAULT_PLAN_SERVICES.map((s) => {
           if (s.id === 'srv_socio') return { ...s, active: t?.socioModuleEnabled === true };
@@ -280,6 +343,14 @@ export default function SuperPlansPage() {
       toast('Escribe el precio base de la app para calcular las cuotas.', 'error');
       return;
     }
+    const hasExistingPayments = rows.some((r) => r.status === 'PAID' || (r.paidAmount || 0) > 0);
+    if (hasExistingPayments) {
+      toast(
+        'Esta organización ya cuenta con pagos o abonos registrados. Por seguridad financiera y contable, no se puede reiniciar el cronograma. Puedes editar las cuotas pendientes o agregar nuevas cuotas individuales.',
+        'error',
+      );
+      return;
+    }
     const every = Math.max(1, Number(calcEveryDays) || 30);
     const baseCuota = Math.floor(calcTotalFinanced / calcCuotasNum);
     const remainder = calcTotalFinanced - baseCuota * calcCuotasNum;
@@ -321,7 +392,7 @@ export default function SuperPlansPage() {
       [...prev, ...generated].sort((a, b) => a.dueDate.localeCompare(b.dueDate)),
     );
     setDirty(true);
-    toast(`${n} cuotas generadas. Recuerda guardar los cambios.`, 'success');
+    toast(`${n} cuota(s) agregadas al cronograma. Recuerda guardar los cambios.`, 'success');
   }
 
   function updateRow(id: string, patch: Partial<PlanInstallment>) {
@@ -329,9 +400,167 @@ export default function SuperPlansPage() {
     setDirty(true);
   }
 
-  function removeRow(id: string) {
-    setRows((prev) => prev.filter((r) => r.installmentId !== id));
+  function handleOpenEditModal(r: PlanInstallment) {
+    setEditTargetRow(r);
+    setEditConcept(r.concept);
+    setEditDueDate(r.dueDate);
+    setEditAmount(String(r.amount));
+    setEditReason('');
+    setEditModalOpen(true);
+  }
+
+  async function handleSaveEditModal() {
+    if (!editTargetRow) return;
+    const amountVal = Math.round(Number(editAmount) || 0);
+    if (amountVal <= 0) {
+      toast('Escribe un monto válido para la cuota.', 'error');
+      return;
+    }
+    const currentPaid = Number(editTargetRow.paidAmount) || 0;
+    if (amountVal < currentPaid) {
+      toast(
+        `El nuevo valor (${formatCOP(amountVal)}) no puede ser menor a lo ya abonado (${formatCOP(currentPaid)}).`,
+        'error',
+      );
+      return;
+    }
+
+    const isNowFullyPaid = amountVal === currentPaid;
+    const newStatus: PlanInstallment['status'] = isNowFullyPaid
+      ? 'PAID'
+      : editTargetRow.status === 'CANCELLED'
+      ? 'PENDING'
+      : editTargetRow.status;
+
+    const updatedRows = rows.map((r) =>
+      r.installmentId === editTargetRow.installmentId
+        ? {
+            ...r,
+            concept: editConcept.trim() || r.concept,
+            dueDate: editDueDate || r.dueDate,
+            amount: amountVal,
+            status: newStatus,
+            paidAt: isNowFullyPaid ? r.paidAt || nowISO() : r.paidAt,
+          }
+        : r,
+    );
+
+    setRows(updatedRows);
     setDirty(true);
+    setEditModalOpen(false);
+
+    if (tenantId && existingPlanForOrg) {
+      await logAudit({
+        tenantId,
+        action: 'PLAN_INSTALLMENT_EDITED',
+        actorId: session?.userId || 'superadmin',
+        actorName: session?.displayName || 'Super Admin',
+        entityId: editTargetRow.installmentId,
+        entityType: 'plans',
+        payloadSnapshot: {
+          organizacion: selectedTenant?.name ?? tenantId,
+          cuotaAnterior: { concepto: editTargetRow.concept, valor: editTargetRow.amount, vencimiento: editTargetRow.dueDate },
+          cuotaNueva: { concepto: editConcept, valor: amountVal, vencimiento: editDueDate },
+          motivo: editReason.trim() || 'Ajuste manual de cuota',
+        },
+      });
+    }
+
+    toast('Cuota ajustada exitosamente.', 'success');
+  }
+
+  function handleOpenCancelModal(r: PlanInstallment) {
+    setCancelTargetRow(r);
+    setCancelReason('');
+    setCancelModalOpen(true);
+  }
+
+  async function handleConfirmCancelModal() {
+    if (!cancelTargetRow) return;
+    const reasonTrim = cancelReason.trim();
+    if (!reasonTrim) {
+      toast('Escribe el motivo o justificación de la anulación contable.', 'error');
+      return;
+    }
+
+    const updatedRows = rows.map((r) =>
+      r.installmentId === cancelTargetRow.installmentId
+        ? {
+            ...r,
+            status: 'CANCELLED' as const,
+            cancelledAt: nowISO(),
+            cancelReason: reasonTrim,
+          }
+        : r,
+    );
+
+    setRows(updatedRows);
+    setDirty(true);
+    setCancelModalOpen(false);
+
+    if (tenantId && existingPlanForOrg) {
+      await logAudit({
+        tenantId,
+        action: 'PLAN_INSTALLMENT_CANCELLED',
+        actorId: session?.userId || 'superadmin',
+        actorName: session?.displayName || 'Super Admin',
+        entityId: cancelTargetRow.installmentId,
+        entityType: 'plans',
+        payloadSnapshot: {
+          organizacion: selectedTenant?.name ?? tenantId,
+          cuota: cancelTargetRow.concept,
+          valor: cancelTargetRow.amount,
+          abonoPrevio: cancelTargetRow.paidAmount || 0,
+          motivoAnulacion: reasonTrim,
+        },
+      });
+    }
+
+    toast(`Cuota "${cancelTargetRow.concept}" marcada como ANULADA.`, 'info');
+  }
+
+  function handleAddCustomService() {
+    const nameTrim = customServiceName.trim();
+    if (!nameTrim) {
+      toast('Escribe el nombre del costo o servicio.', 'error');
+      return;
+    }
+    const priceVal = Math.round(Number(customServicePrice) || 0);
+    if (priceVal <= 0) {
+      toast('Escribe un valor mayor a cero para el costo.', 'error');
+      return;
+    }
+    const justTrim = customServiceJustification.trim();
+    if (!justTrim) {
+      toast('El campo "¿Por qué este costo o a base de qué?" es obligatorio.', 'error');
+      return;
+    }
+
+    const newItem: PlanServiceItem = {
+      id: `custom_${uid()}`,
+      name: nameTrim,
+      description: customServiceDesc.trim() || `Servicio personalizado: ${nameTrim}`,
+      price: priceVal,
+      active: true,
+      billingCycle: customServiceCycle,
+      isCustom: true,
+      justification: justTrim,
+    };
+
+    setServicesList((prev) => [...prev, newItem]);
+    setCustomServiceName('');
+    setCustomServicePrice('');
+    setCustomServiceJustification('');
+    setCustomServiceDesc('');
+    setCustomServiceModalOpen(false);
+    setDirty(true);
+    toast(`Costo adicional "${nameTrim}" agregado al catálogo. Recuerda guardar el plan.`, 'success');
+  }
+
+  function handleRemoveCustomService(id: string) {
+    setServicesList((prev) => prev.filter((s) => s.id !== id));
+    setDirty(true);
+    toast('Costo adicional removido.', 'info');
   }
 
   async function save() {
@@ -367,6 +596,8 @@ export default function SuperPlansPage() {
         cloudMonthlyFee: Math.max(0, Math.round(Number(cloudFee) || 0)),
         cloudBillingDay: Math.min(28, Math.max(1, Number(cloudBillingDay) || 1)),
         cloudPaidThrough: existing?.cloudPaidThrough,
+        cloudStartDate: existing?.cloudStartDate ?? (tenant?.createdAt ? String(tenant.createdAt).slice(0, 10) : undefined),
+        paymentsHistory: existing?.paymentsHistory ?? [],
         notes: notes.trim(),
         services: servicesList,
         installments: [...rows]
@@ -433,8 +664,10 @@ export default function SuperPlansPage() {
     const paid = Number(r.paidAmount) || 0;
     const remaining = Math.max(0, (Number(r.amount) || 0) - paid);
     setAbonoTargetRow(r);
-    setAbonoAmount(remaining > 0 ? String(Math.round(remaining / 2)) : '');
+    setAbonoAmount(remaining > 0 ? String(remaining) : '');
     setAbonoGrace15Days(true);
+    setAbonoReference('');
+    setAbonoPaymentMethod('Transferencia Bancaria');
     setAbonoNotes('');
     setAbonoModalOpen(true);
   }
@@ -471,7 +704,7 @@ export default function SuperPlansPage() {
       );
       setRows(updatedRows);
 
-      // Guardar plan directamente en Dexie y preparar sync
+      // Guardar plan directamente en Dexie y preparar sync con historial de pagos inmutable
       const plan = existingPlanForOrg || {
         planId: uid(),
         tenantId,
@@ -487,8 +720,24 @@ export default function SuperPlansPage() {
         syncStatus: 'PENDING' as const,
       };
 
+      const paymentRecord: PlanPaymentRecord = {
+        id: uid(),
+        date: today,
+        amount: amountVal,
+        concept: isFullyPaid && currentPaid === 0 ? `Pago total: ${abonoTargetRow.concept}` : `Abono a: ${abonoTargetRow.concept}`,
+        type: isFullyPaid && currentPaid === 0 ? 'TOTAL' : 'ABONO',
+        installmentId: abonoTargetRow.installmentId,
+        paymentMethod: abonoPaymentMethod,
+        reference: abonoReference.trim() || undefined,
+        registeredBy: session.displayName || 'Super Admin',
+        notes: abonoNotes.trim() || undefined,
+      };
+
+      const updatedHistory = [...(plan.paymentsHistory ?? []), paymentRecord];
+
       const updatedPlan: ServicePlan = {
         ...plan,
+        paymentsHistory: updatedHistory,
         installments: updatedRows.map((r) => ({
           ...r,
           amount: Math.max(0, Math.round(Number(r.amount) || 0)),
@@ -891,7 +1140,22 @@ export default function SuperPlansPage() {
                     Selecciona los beneficios incluidos en el plan. Se sincronizarán automáticamente con las funciones activas de la organización.
                   </CardDescription>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 text-xs text-indigo-700 border-indigo-200 hover:bg-indigo-50 cursor-pointer"
+                    onClick={() => {
+                      setCustomServiceName('');
+                      setCustomServicePrice('');
+                      setCustomServiceCycle('MONTHLY');
+                      setCustomServiceJustification('');
+                      setCustomServiceDesc('');
+                      setCustomServiceModalOpen(true);
+                    }}
+                  >
+                    <Plus size={14} /> Agregar Costo Adicional
+                  </Button>
                   <Button
                     variant="outline"
                     size="sm"
@@ -922,7 +1186,9 @@ export default function SuperPlansPage() {
                     className={cn(
                       'flex items-center justify-between p-3 rounded-xl border transition-all cursor-pointer select-none gap-2',
                       srv.active
-                        ? 'border-emerald-500/60 bg-emerald-50/50 shadow-xs'
+                        ? srv.isCustom
+                          ? 'border-indigo-400 bg-indigo-50/40 shadow-xs'
+                          : 'border-emerald-500/60 bg-emerald-50/50 shadow-xs'
                         : 'border-slate-200 bg-white hover:border-slate-300 opacity-75',
                     )}
                   >
@@ -931,16 +1197,29 @@ export default function SuperPlansPage() {
                         type="checkbox"
                         checked={srv.active}
                         onChange={() => {}} // handled by parent div
-                        className="mt-0.5 h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer shrink-0"
+                        className={cn(
+                          'mt-0.5 h-4 w-4 rounded border-slate-300 cursor-pointer shrink-0',
+                          srv.isCustom ? 'text-indigo-600 focus:ring-indigo-500' : 'text-emerald-600 focus:ring-emerald-500',
+                        )}
                       />
                       <div className="min-w-0">
-                        <p className={cn('text-xs font-bold leading-tight', srv.active ? 'text-slate-900' : 'text-slate-600')}>
-                          {srv.name}
-                        </p>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <p className={cn('text-xs font-bold leading-tight', srv.active ? (srv.isCustom ? 'text-indigo-950' : 'text-slate-900') : 'text-slate-600')}>
+                            {srv.name}
+                          </p>
+                          {srv.isCustom && (
+                            <Badge variant="info" className="text-[9px] px-1 py-0">Personalizado</Badge>
+                          )}
+                        </div>
                         {srv.description && (
                           <p className="text-[11px] text-slate-500 mt-0.5 line-clamp-2">
                             {srv.description}
                           </p>
+                        )}
+                        {srv.isCustom && srv.justification && (
+                          <div className="mt-1 rounded bg-indigo-100/70 p-1.5 text-[10px] text-indigo-900 leading-tight">
+                            <span className="font-bold">¿Por qué este costo?:</span> {srv.justification}
+                          </div>
                         )}
                       </div>
                     </div>
@@ -968,43 +1247,55 @@ export default function SuperPlansPage() {
                       </div>
 
                       {/* Selector de Modalidad: Mensual vs Pago Único */}
-                      <div className="flex items-center gap-1 mt-1.5 bg-slate-100 p-0.5 rounded-md border border-slate-200">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const updated = [...servicesList];
-                            updated[idx] = { ...srv, billingCycle: 'MONTHLY' };
-                            setServicesList(updated);
-                            setDirty(true);
-                          }}
-                          className={cn(
-                            'px-1.5 py-0.5 text-[9px] font-bold rounded transition-colors',
-                            srv.billingCycle !== 'ONE_TIME'
-                              ? 'bg-emerald-600 text-white shadow-2xs'
-                              : 'text-slate-500 hover:text-slate-800',
-                          )}
-                          title="Cobro recurrente mensual"
-                        >
-                          /mes
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const updated = [...servicesList];
-                            updated[idx] = { ...srv, billingCycle: 'ONE_TIME' };
-                            setServicesList(updated);
-                            setDirty(true);
-                          }}
-                          className={cn(
-                            'px-1.5 py-0.5 text-[9px] font-bold rounded transition-colors',
-                            srv.billingCycle === 'ONE_TIME'
-                              ? 'bg-indigo-600 text-white shadow-2xs'
-                              : 'text-slate-500 hover:text-slate-800',
-                          )}
-                          title="Pago único (Licencia permanente o setup inicial)"
-                        >
-                          Único
-                        </button>
+                      <div className="flex items-center gap-1 mt-1.5">
+                        <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-md border border-slate-200">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const updated = [...servicesList];
+                              updated[idx] = { ...srv, billingCycle: 'MONTHLY' };
+                              setServicesList(updated);
+                              setDirty(true);
+                            }}
+                            className={cn(
+                              'px-1.5 py-0.5 text-[9px] font-bold rounded transition-colors',
+                              srv.billingCycle !== 'ONE_TIME'
+                                ? 'bg-emerald-600 text-white shadow-2xs'
+                                : 'text-slate-500 hover:text-slate-800',
+                            )}
+                            title="Cobro recurrente mensual"
+                          >
+                            /mes
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const updated = [...servicesList];
+                              updated[idx] = { ...srv, billingCycle: 'ONE_TIME' };
+                              setServicesList(updated);
+                              setDirty(true);
+                            }}
+                            className={cn(
+                              'px-1.5 py-0.5 text-[9px] font-bold rounded transition-colors',
+                              srv.billingCycle === 'ONE_TIME'
+                                ? 'bg-indigo-600 text-white shadow-2xs'
+                                : 'text-slate-500 hover:text-slate-800',
+                            )}
+                            title="Pago único (Licencia permanente o setup inicial)"
+                          >
+                            Único
+                          </button>
+                        </div>
+                        {srv.isCustom && (
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveCustomService(srv.id)}
+                            className="text-red-500 hover:text-red-700 p-1 text-[11px] rounded hover:bg-red-50"
+                            title="Eliminar este costo personalizado"
+                          >
+                            <Ban size={13} />
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1324,37 +1615,49 @@ export default function SuperPlansPage() {
                       const paid = Number(r.paidAmount) || 0;
                       const remaining = Math.max(0, (Number(r.amount) || 0) - paid);
                       const isPaid = r.status === 'PAID';
+                      const isCancelled = r.status === 'CANCELLED';
+
                       return (
-                        <TR key={r.installmentId}>
-                          <TD>
-                            <Input
-                              type="date"
-                              value={r.dueDate}
-                              onChange={(e) => updateRow(r.installmentId, { dueDate: e.target.value })}
-                              className="w-36"
-                            />
+                        <TR
+                          key={r.installmentId}
+                          className={cn(
+                            isCancelled
+                              ? 'bg-slate-100/70 opacity-60'
+                              : isPaid
+                              ? 'bg-emerald-50/30'
+                              : paid > 0
+                              ? 'bg-amber-50/30'
+                              : '',
+                          )}
+                        >
+                          <TD className="whitespace-nowrap">
+                            <span className={cn('text-xs font-mono font-medium', isCancelled ? 'line-through text-slate-400' : 'text-slate-800')}>
+                              {formatDateShort(r.dueDate)}
+                            </span>
                           </TD>
                           <TD>
-                            <Input
-                              value={r.concept}
-                              onChange={(e) => updateRow(r.installmentId, { concept: e.target.value })}
-                              className="min-w-36"
-                            />
+                            <div className="min-w-36">
+                              <p className={cn('text-xs font-semibold', isCancelled ? 'line-through text-slate-400' : 'text-slate-900')}>
+                                {r.concept}
+                              </p>
+                              {isCancelled && r.cancelReason && (
+                                <p className="text-[10px] text-red-600 font-medium mt-0.5">
+                                  Motivo anulación: {r.cancelReason}
+                                </p>
+                              )}
+                            </div>
+                          </TD>
+                          <TD className="whitespace-nowrap">
+                            <span className={cn('text-xs font-bold', isCancelled ? 'line-through text-slate-400' : 'text-slate-900')}>
+                              {formatCOP(r.amount)}
+                            </span>
                           </TD>
                           <TD>
-                            <Input
-                              value={String(r.amount)}
-                              onChange={(e) =>
-                                updateRow(r.installmentId, { amount: Number(e.target.value) })
-                              }
-                              inputMode="numeric"
-                              className="w-28"
-                            />
-                          </TD>
-                          <TD>
-                            {isPaid ? (
-                              <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-1 rounded-md">
-                                Pagado 100% ({formatCOP(r.amount)})
+                            {isCancelled ? (
+                              <span className="text-xs text-slate-400 italic">Anulada contablemente</span>
+                            ) : isPaid ? (
+                              <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md">
+                                <BadgeCheck size={12} /> Pagado 100% ({formatCOP(r.amount)})
                               </span>
                             ) : paid > 0 ? (
                               <div className="text-xs space-y-0.5">
@@ -1375,55 +1678,68 @@ export default function SuperPlansPage() {
                             )}
                           </TD>
                           <TD>
-                            <Switch
-                              checked={r.status === 'PAID'}
-                              label="Pagada"
-                              onChange={() =>
-                                updateRow(r.installmentId, {
-                                  status: r.status === 'PAID' ? 'PENDING' : 'PAID',
-                                  paidAt: r.status === 'PAID' ? undefined : nowISO(),
-                                  paidAmount: r.status === 'PAID' ? 0 : r.amount,
-                                })
-                              }
-                            />
+                            {isCancelled ? (
+                              <Badge variant="muted" className="text-[9px] font-bold">ANULADA</Badge>
+                            ) : isPaid ? (
+                              <Badge variant="success" className="text-[9px] font-bold">PAGADA</Badge>
+                            ) : paid > 0 ? (
+                              <Badge variant="warning" className="text-[9px] font-bold">ABONO ACTIVO</Badge>
+                            ) : (
+                              <Badge variant="outline" className="text-[9px]">PENDIENTE</Badge>
+                            )}
                           </TD>
                           <TD className="text-right">
-                            <div className="flex items-center justify-end gap-1.5">
+                            <div className="flex items-center justify-end gap-1.5 flex-wrap">
                               <Button
                                 variant="outline"
                                 size="sm"
                                 onClick={() => {
                                   setInvoiceInstallmentTarget(r);
                                   const total = Number(r.amount) || 0;
-                                  const paid = Number(r.paidAmount) || 0;
-                                  const remaining = Math.max(0, total - paid);
-                                  setInvoiceCustomAmount(String(remaining > 0 ? remaining : total));
+                                  const p = Number(r.paidAmount) || 0;
+                                  const rem = Math.max(0, total - p);
+                                  setInvoiceCustomAmount(String(rem > 0 ? rem : total));
                                   setInvoiceModalOpen(true);
                                 }}
                                 title="Ver o emitir factura digital de esta cuota"
-                                className="text-slate-600 hover:text-slate-900 border-slate-300 hover:bg-slate-50 text-xs px-2 h-8 gap-1 cursor-pointer"
+                                className="text-slate-600 hover:text-slate-900 border-slate-300 hover:bg-slate-50 text-xs px-2 h-7 gap-1 cursor-pointer"
                               >
-                                <FileText size={13} /> Factura
+                                <FileText size={12} /> Factura
                               </Button>
-                              {!isPaid && (
+
+                              {!isPaid && !isCancelled && (
                                 <Button
                                   variant="outline"
                                   size="sm"
                                   onClick={() => handleOpenAbonoModal(r)}
-                                  title="Registrar abono a esta cuota"
-                                  className="text-emerald-700 hover:text-emerald-800 border-emerald-300 hover:bg-emerald-50 text-xs px-2.5 h-8 gap-1 cursor-pointer"
+                                  title="Registrar abono o pago a esta cuota"
+                                  className="text-emerald-700 hover:text-emerald-800 border-emerald-300 hover:bg-emerald-50 text-xs px-2.5 h-7 gap-1 cursor-pointer"
                                 >
-                                  <HandCoins size={13} /> Abonar
+                                  <HandCoins size={12} /> Abonar
                                 </Button>
                               )}
+
                               <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => removeRow(r.installmentId)}
-                                title="Quitar cuota"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleOpenEditModal(r)}
+                                title="Editar cuota (corregir valor, fecha o concepto con validación)"
+                                className="text-indigo-700 hover:text-indigo-800 border-indigo-200 hover:bg-indigo-50 text-xs px-2 h-7 gap-1 cursor-pointer"
                               >
-                                <Trash2 size={14} className="text-red-500" />
+                                <Pencil size={12} /> Editar
                               </Button>
+
+                              {!isCancelled && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => handleOpenCancelModal(r)}
+                                  title="Anular cuota contablemente (mantiene trazabilidad)"
+                                  className="text-red-500 hover:text-red-700 hover:bg-red-50 text-xs px-2 h-7 gap-1 cursor-pointer"
+                                >
+                                  <Ban size={12} /> Anular
+                                </Button>
+                              )}
                             </div>
                           </TD>
                         </TR>
@@ -1432,6 +1748,81 @@ export default function SuperPlansPage() {
                   </TBody>
                 </TableWrap>
               )}
+
+              {/* Historial de Pagos y Trazabilidad Financiera de la Organización */}
+              <div className="mt-8 rounded-xl border border-slate-200 bg-white p-4 space-y-3 shadow-2xs">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                  <div className="flex items-center gap-2">
+                    <History size={16} className="text-emerald-600" />
+                    <div>
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-slate-900">
+                        Historial de Pagos y Trazabilidad Financiera
+                      </h4>
+                      <p className="text-[11px] text-slate-500">
+                        Registro inmutable de todas las transacciones, abonos y mensualidades cloud cobradas a esta organización.
+                      </p>
+                    </div>
+                  </div>
+                  <Badge variant="outline" className="text-[10px]">
+                    {(existingPlanForOrg?.paymentsHistory ?? []).length} transacción(es)
+                  </Badge>
+                </div>
+
+                {(existingPlanForOrg?.paymentsHistory ?? []).length === 0 ? (
+                  <div className="py-6 text-center text-xs text-slate-400 bg-slate-50 rounded-lg">
+                    No hay registros de pagos o abonos previos para esta organización.
+                  </div>
+                ) : (
+                  <TableWrap>
+                    <THead>
+                      <TR>
+                        <TH>Fecha</TH>
+                        <TH>Concepto / Detalle</TH>
+                        <TH>Tipo</TH>
+                        <TH className="text-right">Monto Recaudado</TH>
+                        <TH>Registrado Por</TH>
+                        <TH>Referencia / Notas</TH>
+                      </TR>
+                    </THead>
+                    <TBody>
+                      {[...(existingPlanForOrg?.paymentsHistory ?? [])]
+                        .reverse()
+                        .map((pay) => (
+                          <TR key={pay.id}>
+                            <TD className="text-xs font-mono text-slate-600 whitespace-nowrap">
+                              {formatDateShort(pay.date)}
+                            </TD>
+                            <TD className="text-xs font-semibold text-slate-900">
+                              {pay.concept}
+                            </TD>
+                            <TD>
+                              <Badge
+                                variant={pay.type === 'TOTAL' ? 'success' : pay.type === 'CLOUD' ? 'info' : 'warning'}
+                                className="text-[9px] font-bold"
+                              >
+                                {pay.type === 'TOTAL' ? 'PAGO 100%' : pay.type === 'CLOUD' ? 'CLOUD' : 'ABONO'}
+                              </Badge>
+                            </TD>
+                            <TD className="text-xs font-black text-right text-emerald-700 whitespace-nowrap">
+                              {formatCOP(pay.amount)}
+                            </TD>
+                            <TD className="text-xs text-slate-500">
+                              {pay.registeredBy || 'Super Admin'}
+                            </TD>
+                            <TD className="text-xs text-slate-500">
+                              {pay.reference ? (
+                                <span className="font-mono text-[10px] bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded mr-1">
+                                  Ref: {pay.reference}
+                                </span>
+                              ) : null}
+                              {pay.notes || '—'}
+                            </TD>
+                          </TR>
+                        ))}
+                    </TBody>
+                  </TableWrap>
+                )}
+              </div>
             </>
           )}
 
@@ -1460,7 +1851,7 @@ export default function SuperPlansPage() {
               setAbonoTargetRow(null);
             }
           }}
-          title="Registrar Abono a Cuota"
+          title="Registrar Abono o Pago a Cuota"
           description={`Abonar a: ${abonoTargetRow.concept}`}
         >
           <div className="space-y-4">
@@ -1532,6 +1923,31 @@ export default function SuperPlansPage() {
               })()}
             </div>
 
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <Label>Método de Pago</Label>
+                <Select
+                  value={abonoPaymentMethod}
+                  onChange={(e) => setAbonoPaymentMethod(e.target.value)}
+                >
+                  <option value="Transferencia Bancaria">Transferencia Bancaria</option>
+                  <option value="Nequi">Nequi</option>
+                  <option value="Bancolombia">Bancolombia</option>
+                  <option value="Daviplata">Daviplata</option>
+                  <option value="Efectivo">Efectivo</option>
+                  <option value="Otro">Otro medio digital</option>
+                </Select>
+              </div>
+              <div>
+                <Label>Referencia / Comprobante (opcional)</Label>
+                <Input
+                  value={abonoReference}
+                  onChange={(e) => setAbonoReference(e.target.value)}
+                  placeholder="Ej: M129845 o voucher"
+                />
+              </div>
+            </div>
+
             {/* Switch de vigencia de 15 días */}
             <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-3">
               <Switch
@@ -1547,11 +1963,11 @@ export default function SuperPlansPage() {
             </div>
 
             <div>
-              <Label>Notas o referencia del abono (opcional)</Label>
+              <Label>Notas o acuerdo con el cliente (opcional)</Label>
               <Input
                 value={abonoNotes}
                 onChange={(e) => setAbonoNotes(e.target.value)}
-                placeholder="Ej. Transferencia Nequi ref: 894372"
+                placeholder="Ej. Abono acordado telefónicamente, saldo vence en 15 días"
               />
             </div>
 
@@ -1572,6 +1988,208 @@ export default function SuperPlansPage() {
                 className="bg-emerald-600 hover:bg-emerald-500 cursor-pointer"
               >
                 <HandCoins size={14} /> {savingAbono ? 'Aplicando…' : 'Aplicar Abono'}
+              </Button>
+            </div>
+          </div>
+        </Dialog>
+      )}
+
+      {/* Modal para Editar Cuota */}
+      {editModalOpen && editTargetRow && (
+        <Dialog
+          open={editModalOpen}
+          onClose={() => setEditModalOpen(false)}
+          title="Editar Cuota de la App"
+          description={`Modificar parámetros contables de la cuota: ${editTargetRow.concept}`}
+        >
+          <div className="space-y-4">
+            <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-3.5 text-xs space-y-1">
+              <p className="font-bold text-indigo-900">Validación de Integridad Contable:</p>
+              <p className="text-indigo-800">
+                Abono acumulado registrado:{' '}
+                <strong className="text-emerald-700">{formatCOP(Number(editTargetRow.paidAmount) || 0)}</strong>.
+                El nuevo valor pactado de la cuota no puede ser inferior a este monto ya abonado.
+              </p>
+            </div>
+
+            <div>
+              <Label>Concepto de la cuota</Label>
+              <Input
+                value={editConcept}
+                onChange={(e) => setEditConcept(e.target.value)}
+                placeholder="Ej: Cuota 1/3 Licencia PresMon"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <Label>Fecha de Vencimiento</Label>
+                <Input
+                  type="date"
+                  value={editDueDate}
+                  onChange={(e) => setEditDueDate(e.target.value)}
+                />
+              </div>
+              <div>
+                <Label>Valor Total de la Cuota (COP)</Label>
+                <Input
+                  type="number"
+                  min={Number(editTargetRow.paidAmount) || 1}
+                  value={editAmount}
+                  onChange={(e) => setEditAmount(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div>
+              <Label>Motivo o justificación del ajuste (auditoría)</Label>
+              <Input
+                value={editReason}
+                onChange={(e) => setEditReason(e.target.value)}
+                placeholder="Ej: Descuento comercial pactado / Corrección de valor inicial"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <Button variant="outline" onClick={() => setEditModalOpen(false)}>
+                Cancelar
+              </Button>
+              <Button
+                onClick={() => void handleSaveEditModal()}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer"
+              >
+                Guardar Ajuste
+              </Button>
+            </div>
+          </div>
+        </Dialog>
+      )}
+
+      {/* Modal para Anular Cuota Contable */}
+      {cancelModalOpen && cancelTargetRow && (
+        <Dialog
+          open={cancelModalOpen}
+          onClose={() => setCancelModalOpen(false)}
+          title="Anular Cuota Contablemente"
+          description={`Anulación de: ${cancelTargetRow.concept}`}
+        >
+          <div className="space-y-4">
+            <div className="rounded-xl border border-red-200 bg-red-50 p-3.5 text-xs space-y-1.5">
+              <p className="font-bold text-red-900 flex items-center gap-1.5">
+                <AlertCircle size={15} /> Advertencia de Integridad Financiera
+              </p>
+              <p className="text-red-800 leading-relaxed">
+                Por normativa de auditoría, las transacciones nunca se eliminan físicamente de la base de datos.
+                La cuota pasará a estado <strong>ANULADA</strong>, dejará de cobrarse y se conservará el registro histórico.
+              </p>
+              <div className="pt-1 text-slate-700 border-t border-red-200/60 flex justify-between">
+                <span>Valor cuota: <strong>{formatCOP(cancelTargetRow.amount)}</strong></span>
+                <span>Abono registrado: <strong>{formatCOP(Number(cancelTargetRow.paidAmount) || 0)}</strong></span>
+              </div>
+            </div>
+
+            <div>
+              <Label className="text-red-900 font-bold">
+                Motivo obligatorio de la anulación:
+              </Label>
+              <Input
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                placeholder="Ej: Condonación autorizada por gerencia / Error en emisión inicial"
+                autoFocus
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <Button variant="outline" onClick={() => setCancelModalOpen(false)}>
+                Volver
+              </Button>
+              <Button
+                onClick={() => void handleConfirmCancelModal()}
+                className="bg-red-600 hover:bg-red-700 text-white cursor-pointer"
+              >
+                <Ban size={14} /> Confirmar Anulación
+              </Button>
+            </div>
+          </div>
+        </Dialog>
+      )}
+
+      {/* Modal para Agregar Costo o Servicio Personalizado con Justificación */}
+      {customServiceModalOpen && (
+        <Dialog
+          open={customServiceModalOpen}
+          onClose={() => setCustomServiceModalOpen(false)}
+          title="Agregar Costo o Servicio Personalizado"
+          description="Añade un cobro adicional fuera del catálogo base con justificación requerida."
+        >
+          <div className="space-y-4">
+            <div>
+              <Label>Nombre del Costo o Servicio</Label>
+              <Input
+                value={customServiceName}
+                onChange={(e) => setCustomServiceName(e.target.value)}
+                placeholder="Ej: Migración de base de datos anterior, Capacitación presencial, Setup dedicado"
+                autoFocus
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <Label>Valor en Pesos (COP)</Label>
+                <Input
+                  type="number"
+                  min="1000"
+                  step="1000"
+                  value={customServicePrice}
+                  onChange={(e) => setCustomServicePrice(e.target.value)}
+                  placeholder="Ej: 50000"
+                />
+              </div>
+              <div>
+                <Label>Modalidad de Cobro</Label>
+                <Select
+                  value={customServiceCycle}
+                  onChange={(e) => setCustomServiceCycle(e.target.value as 'MONTHLY' | 'ONE_TIME')}
+                >
+                  <option value="MONTHLY">Recurrente Mensual (/mes)</option>
+                  <option value="ONE_TIME">Pago Único (Licencia / Setup)</option>
+                </Select>
+              </div>
+            </div>
+
+            <div>
+              <Label className="text-indigo-950 font-bold">
+                ¿Por qué este costo o a base de qué? (Obligatorio)
+              </Label>
+              <Input
+                value={customServiceJustification}
+                onChange={(e) => setCustomServiceJustification(e.target.value)}
+                placeholder="Ej: Cobro por migración de 300 clientes desde Excel según acuerdo con el cliente"
+              />
+              <p className="text-[10px] text-slate-400 mt-0.5">
+                Quedará registrado para auditoría y visible en el panel del cliente.
+              </p>
+            </div>
+
+            <div>
+              <Label>Descripción o alcance del servicio (opcional)</Label>
+              <Input
+                value={customServiceDesc}
+                onChange={(e) => setCustomServiceDesc(e.target.value)}
+                placeholder="Ej: Incluye limpieza de datos, estructuración y carga inicial"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <Button variant="outline" onClick={() => setCustomServiceModalOpen(false)}>
+                Cancelar
+              </Button>
+              <Button
+                onClick={handleAddCustomService}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer"
+              >
+                <Plus size={14} /> Agregar al Catálogo
               </Button>
             </div>
           </div>

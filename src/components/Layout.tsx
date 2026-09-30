@@ -507,6 +507,7 @@ export default function Layout() {
     const nextOfflineBlocked = remote.data.offlineBlocked === true;
     const nextBannerDeactivated = remote.data.paymentBannerDeactivated === true;
     const nextClientPortalEnabled = remote.data.clientPortalEnabled !== false;
+    const nextSettingsModuleEnabled = remote.data.settingsModuleEnabled !== false;
     const nextAuditModuleEnabled = remote.data.auditModuleEnabled === true;
     const nextSocioModuleEnabled = remote.data.socioModuleEnabled === true;
     const nextAllowMultipleSessions = remote.data.allowMultipleSessions === true;
@@ -532,6 +533,7 @@ export default function Layout() {
       adminUid: session.userId,
       status: remote.status,
       clientPortalEnabled: nextClientPortalEnabled,
+      settingsModuleEnabled: nextSettingsModuleEnabled,
       createdAt: String(remote.data.createdAt || todayStr()),
       updatedAt: String(remote.data.updatedAt || todayStr()),
       syncStatus: 'SYNCED',
@@ -544,6 +546,7 @@ export default function Layout() {
       local.offlineBlocked !== nextOfflineBlocked ||
       local.paymentBannerDeactivated !== nextBannerDeactivated ||
       local.clientPortalEnabled !== nextClientPortalEnabled ||
+      local.settingsModuleEnabled !== nextSettingsModuleEnabled ||
       local.auditModuleEnabled !== nextAuditModuleEnabled ||
       local.socioModuleEnabled !== nextSocioModuleEnabled ||
       local.allowMultipleSessions !== nextAllowMultipleSessions ||
@@ -563,6 +566,7 @@ export default function Layout() {
         offlineBlocked: nextOfflineBlocked,
         paymentBannerDeactivated: nextBannerDeactivated,
         clientPortalEnabled: nextClientPortalEnabled,
+        settingsModuleEnabled: nextSettingsModuleEnabled,
         auditModuleEnabled: nextAuditModuleEnabled,
         socioModuleEnabled: nextSocioModuleEnabled,
         allowMultipleSessions: nextAllowMultipleSessions,

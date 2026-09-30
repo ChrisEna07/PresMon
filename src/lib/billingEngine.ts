@@ -43,13 +43,20 @@ export interface MonthlyInvoiceResult {
 /**
  * Obtiene la fecha del primer vencimiento pendiente de cloud para un plan.
  * Si nunca se ha registrado un pago (`cloudPaidThrough` vacío), se evalúa la fecha
- * más antigua entre la creación del plan y la primera cuota de la app.
+ * de suscripción / inicio del servicio cloud (por defecto la fecha de creación de la cuenta u organización).
+ * El día de cobro mensual se rige por dicho aniversario día a día (ej. 26 de agosto -> 26 de cada mes).
  */
 export function getFirstUnpaidCloudDue(
   plan: ServicePlan,
   today: string = todayStr(),
 ): string {
-  const billingDay = Math.min(28, Math.max(1, Number(plan.cloudBillingDay) || 1));
+  // Fecha base de inicio de la relación comercial o del servicio cloud
+  const startDate = (plan.cloudStartDate && plan.cloudStartDate.length >= 10)
+    ? plan.cloudStartDate.slice(0, 10)
+    : (plan.createdAt && plan.createdAt.length >= 10 ? plan.createdAt.slice(0, 10) : today);
+
+  const regDay = Math.min(28, Math.max(1, parseInt(startDate.slice(8, 10), 10) || 1));
+  const billingDay = plan.cloudBillingDay ? Math.min(28, Math.max(1, Number(plan.cloudBillingDay))) : regDay;
   const dayStr = String(billingDay).padStart(2, '0');
   const paidThrough = String(plan.cloudPaidThrough ?? '').trim();
 
@@ -59,19 +66,8 @@ export function getFirstUnpaidCloudDue(
     return `${nextDate.slice(0, 8)}${dayStr}`;
   }
 
-  // Si paidThrough está vacío, determinamos cuándo inició la obligación:
-  // tomamos la fecha más antigua entre createdAt del plan y el vencimiento de la primera cuota
-  let startMonthStr = (plan.createdAt && plan.createdAt.length >= 7)
-    ? plan.createdAt.slice(0, 7)
-    : today.slice(0, 7);
-
-  if (plan.installments && plan.installments.length > 0) {
-    const sorted = [...plan.installments].sort((a, b) => a.dueDate.localeCompare(b.dueDate));
-    if (sorted[0]?.dueDate && sorted[0].dueDate.slice(0, 7) < startMonthStr) {
-      startMonthStr = sorted[0].dueDate.slice(0, 7);
-    }
-  }
-
+  // Si nunca se ha pagado, el cobro inicial exigible parte del mes de registro con su día aniversario
+  const startMonthStr = startDate.slice(0, 7);
   return `${startMonthStr}-${dayStr}`;
 }
 

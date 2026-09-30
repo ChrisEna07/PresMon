@@ -308,16 +308,18 @@ export default function SuperAdminPage() {
   }
 
   const [analyticsViewOpen, setAnalyticsViewOpen] = useState(true);
+  const [showOrgPortfolio, setShowOrgPortfolio] = useState(false);
 
   const globalMetrics = useMemo(() => {
     const activeTenantsList = (tenants ?? []).filter((t) => t.status !== 'DELETED');
     const tenantIdsSet = new Set(activeTenantsList.map((t) => t.tenantId));
 
-    // 1. Cobros e Ingresos de PresMon a las Organizaciones
+    // 1. Cobros e Ingresos de PresMon a las Organizaciones (Finanzas SaaS ChrizDev)
     let totalPlanContracted = 0;
     let totalPlanCollected = 0;
     let totalPlanOverdue = 0;
     let tenantsInMoraCount = 0;
+    let totalCloudRecurringMonthly = 0;
 
     activeTenantsList.forEach((t) => {
       const plan = planByTenant.get(t.tenantId);
@@ -326,10 +328,15 @@ export default function SuperAdminPage() {
       if (invoice.isOverdueMoreThan5Days) tenantsInMoraCount++;
       totalPlanOverdue += invoice.totalOverdueAmount;
 
+      if (plan.cloudServiceIncluded && (Number(plan.cloudMonthlyFee) || 0) > 0) {
+        totalCloudRecurringMonthly += Number(plan.cloudMonthlyFee) || 0;
+      }
+
       if (plan.appPaymentMode === 'FULL') {
         totalPlanContracted += Number(plan.appTotalAmount) || 0;
       }
       (plan.installments ?? []).forEach((inst) => {
+        if (inst.status === 'CANCELLED') return;
         totalPlanContracted += Number(inst.amount) || 0;
         if (inst.status === 'PAID') {
           totalPlanCollected += Number(inst.amount) || 0;
@@ -364,7 +371,7 @@ export default function SuperAdminPage() {
         onlineInfo: getTenantOnlineInfo(t),
       }))
       .sort((a, b) => b.auditCount - a.auditCount)
-      .slice(0, 3);
+      .slice(0, 5);
 
     // 4. Top Organizaciones con más Préstamos y Cartera
     const loansByTenantMap = new Map<string, { count: number; totalAmount: number }>();
@@ -386,9 +393,9 @@ export default function SuperAdminPage() {
         };
       })
       .sort((a, b) => b.totalAmount - a.totalAmount)
-      .slice(0, 3);
+      .slice(0, 5);
 
-    // 5. Organizaciones con Deuda Pendiente
+    // 5. Organizaciones con Deuda Pendiente (Cálculo exacto: cuotas pendientes + mensualidades cloud exigibles)
     const tenantsWithDebtList = activeTenantsList
       .map((t) => {
         const plan = planByTenant.get(t.tenantId);
@@ -396,28 +403,33 @@ export default function SuperAdminPage() {
         let pendingApp = 0;
         if (plan) {
           (plan.installments ?? []).forEach((i) => {
-            if (i.status !== 'PAID') {
+            if (i.status === 'PENDING') {
               pendingApp += Math.max(0, (Number(i.amount) || 0) - (Number(i.paidAmount) || 0));
             }
           });
         }
+        // cloudDue es la porción de servicios cloud exigibles en la factura
+        const cloudDue = invoice ? Math.max(0, invoice.totalInvoiceAmount - invoice.installmentsAmount) : 0;
+        const totalDue = pendingApp + cloudDue;
+
         return {
           tenant: t,
           invoice,
           pendingApp,
-          totalDue: (invoice?.totalInvoiceAmount ?? 0) + pendingApp,
+          totalDue,
           isOverdue: invoice?.isOverdueMoreThan5Days ?? false,
         };
       })
       .filter((item) => item.totalDue > 0)
       .sort((a, b) => b.totalDue - a.totalDue)
-      .slice(0, 3);
+      .slice(0, 5);
 
     return {
       totalPlanContracted,
       totalPlanCollected,
       totalPlanPending,
       totalPlanOverdue,
+      totalCloudRecurringMonthly,
       tenantsInMoraCount,
       totalLoansPrincipal,
       totalLoansPaid,
@@ -1848,6 +1860,20 @@ export default function SuperAdminPage() {
               </div>
               <div className="flex items-center gap-2">
                 <Button
+                  variant={showOrgPortfolio ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setShowOrgPortfolio(!showOrgPortfolio)}
+                  className={cn(
+                    'text-xs gap-1.5 h-8 cursor-pointer transition-colors',
+                    showOrgPortfolio
+                      ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                      : 'text-slate-600 hover:text-slate-900 border-slate-300'
+                  )}
+                  title="Alternar vista entre finanzas de la plataforma PresMon y cartera operativa de créditos de las organizaciones"
+                >
+                  <TrendingUp size={13} /> {showOrgPortfolio ? 'Ver Solo SaaS PresMon' : 'Ver Cartera Organizaciones'}
+                </Button>
+                <Button
                   variant="outline"
                   size="sm"
                   onClick={() => setAnalyticsViewOpen(!analyticsViewOpen)}
@@ -1859,7 +1885,7 @@ export default function SuperAdminPage() {
               </div>
             </div>
 
-            {/* Fila 1: Métricas de Ingresos de Plataforma y Cartera */}
+            {/* Fila 1: Métricas Financieras del Negocio SaaS PresMon */}
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-3.5 shadow-2xs">
                 <div className="flex items-center justify-between text-emerald-700">
@@ -1874,13 +1900,24 @@ export default function SuperAdminPage() {
 
               <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-3.5 shadow-2xs">
                 <div className="flex items-center justify-between text-amber-700">
-                  <span className="text-[11px] font-bold uppercase tracking-wider">Por Cobrar Planes</span>
+                  <span className="text-[11px] font-bold uppercase tracking-wider">Por Cobrar App</span>
                   <Wallet size={16} />
                 </div>
                 <p className="mt-1 text-lg sm:text-xl font-black text-amber-900">
                   {formatCOP(globalMetrics.totalPlanPending)}
                 </p>
                 <p className="text-[10px] text-amber-700 font-medium mt-0.5">Saldo pendiente de cuotas</p>
+              </div>
+
+              <div className="rounded-xl border border-sky-200 bg-sky-50/60 p-3.5 shadow-2xs">
+                <div className="flex items-center justify-between text-sky-700">
+                  <span className="text-[11px] font-bold uppercase tracking-wider">Cloud Recurrente</span>
+                  <Cloud size={16} />
+                </div>
+                <p className="mt-1 text-lg sm:text-xl font-black text-sky-900">
+                  {formatCOP(globalMetrics.totalCloudRecurringMonthly)}
+                </p>
+                <p className="text-[10px] text-sky-700 font-medium mt-0.5">Mensualidad activa de clientes</p>
               </div>
 
               <div className="rounded-xl border border-red-200 bg-red-50/60 p-3.5 shadow-2xs">
@@ -1895,23 +1932,50 @@ export default function SuperAdminPage() {
                   {globalMetrics.tenantsInMoraCount} organización(es) &gt; 5 días
                 </p>
               </div>
-
-              <div className="rounded-xl border border-sky-200 bg-sky-50/60 p-3.5 shadow-2xs">
-                <div className="flex items-center justify-between text-sky-700">
-                  <span className="text-[11px] font-bold uppercase tracking-wider">Cartera en Calle</span>
-                  <TrendingUp size={16} />
-                </div>
-                <p className="mt-1 text-lg sm:text-xl font-black text-sky-900">
-                  {formatCOP(globalMetrics.totalLoansPrincipal)}
-                </p>
-                <p className="text-[10px] text-sky-700 font-medium mt-0.5">
-                  {globalMetrics.validLoansCount} préstamos · {globalMetrics.borrowersCount} clientes
-                </p>
-              </div>
             </div>
 
+            {/* Vista Especial: Cartera Operativa de las Organizaciones (Solo si el Super Admin lo activa) */}
+            {showOrgPortfolio && (
+              <div className="rounded-xl border border-indigo-200 bg-indigo-50/50 p-4 shadow-2xs space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <TrendingUp size={18} className="text-indigo-600" />
+                    <div>
+                      <p className="text-xs font-black text-indigo-950 uppercase tracking-wider">
+                        Operación Global de Préstamos (Cartera de los Clientes)
+                      </p>
+                      <p className="text-[11px] text-indigo-700">
+                        Estadísticas operativas agregadas de los préstamos colocados por las organizaciones activas.
+                      </p>
+                    </div>
+                  </div>
+                  <Badge variant="info" className="text-[10px] font-bold">Filtro de Cartera Activo</Badge>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
+                  <div className="bg-white p-2.5 rounded-lg border border-indigo-100">
+                    <span className="text-[10px] uppercase font-bold text-slate-500">Capital Colocado</span>
+                    <p className="text-base font-black text-indigo-900">{formatCOP(globalMetrics.totalLoansPrincipal)}</p>
+                  </div>
+                  <div className="bg-white p-2.5 rounded-lg border border-indigo-100">
+                    <span className="text-[10px] uppercase font-bold text-slate-500">Capital Recuperado</span>
+                    <p className="text-base font-black text-emerald-700">{formatCOP(globalMetrics.totalLoansPaid)}</p>
+                  </div>
+                  <div className="bg-white p-2.5 rounded-lg border border-indigo-100">
+                    <span className="text-[10px] uppercase font-bold text-slate-500">Saldo por Cobrar</span>
+                    <p className="text-base font-black text-amber-700">{formatCOP(globalMetrics.totalLoansPending)}</p>
+                  </div>
+                  <div className="bg-white p-2.5 rounded-lg border border-indigo-100">
+                    <span className="text-[10px] uppercase font-bold text-slate-500">Total Operaciones</span>
+                    <p className="text-xs font-bold text-slate-800 mt-1">
+                      {globalMetrics.validLoansCount} créditos · {globalMetrics.borrowersCount} prestatarios
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {analyticsViewOpen && (
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 pt-2">
+              <div className={cn('grid gap-4 pt-2', showOrgPortfolio ? 'grid-cols-1 lg:grid-cols-3' : 'grid-cols-1 md:grid-cols-2')}>
                 {/* Ranking 1: Organizaciones con Más Uso / Actividad */}
                 <div className="rounded-xl border border-slate-200 bg-white p-3.5 space-y-2.5 shadow-2xs">
                   <div className="flex items-center justify-between border-b border-slate-100 pb-2">
@@ -1946,44 +2010,46 @@ export default function SuperAdminPage() {
                   )}
                 </div>
 
-                {/* Ranking 2: Organizaciones con Mayor Cartera / Préstamos */}
-                <div className="rounded-xl border border-slate-200 bg-white p-3.5 space-y-2.5 shadow-2xs">
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                    <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                      <TrendingUp size={14} className="text-emerald-600" /> Mayor Cartera de Préstamos
-                    </span>
-                    <Badge variant="success" className="text-[9px] px-1.5">Capital</Badge>
-                  </div>
-                  {globalMetrics.topTenantsByPortfolio.length === 0 ? (
-                    <p className="text-xs text-slate-400 py-2 text-center">Sin préstamos activos</p>
-                  ) : (
-                    <div className="space-y-2">
-                      {globalMetrics.topTenantsByPortfolio.map((item, i) => (
-                        <div key={item.tenant.tenantId} className="flex items-center justify-between p-2 rounded-lg bg-slate-50 border border-slate-100 text-xs">
-                          <div className="min-w-0 flex-1 pr-2">
-                            <div className="flex items-center gap-1.5">
-                              <span className="font-bold text-slate-400 text-[10px]">#{i + 1}</span>
-                              <p className="font-bold text-slate-900 truncate">{item.tenant.name}</p>
-                            </div>
-                            <p className="text-[10px] text-slate-500 mt-0.5 font-mono">
-                              {item.loansCount} crédito(s) colocados
-                            </p>
-                          </div>
-                          <div className="text-right shrink-0">
-                            <p className="font-black text-emerald-700 text-xs">{formatCOP(item.totalAmount)}</p>
-                            <p className="text-[9px] text-slate-400">Total prestado</p>
-                          </div>
-                        </div>
-                      ))}
+                {/* Ranking 2 (Opcional): Organizaciones con Mayor Cartera / Préstamos */}
+                {showOrgPortfolio && (
+                  <div className="rounded-xl border border-slate-200 bg-white p-3.5 space-y-2.5 shadow-2xs">
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                      <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                        <TrendingUp size={14} className="text-emerald-600" /> Mayor Cartera de Préstamos
+                      </span>
+                      <Badge variant="success" className="text-[9px] px-1.5">Capital</Badge>
                     </div>
-                  )}
-                </div>
+                    {globalMetrics.topTenantsByPortfolio.length === 0 ? (
+                      <p className="text-xs text-slate-400 py-2 text-center">Sin préstamos activos</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {globalMetrics.topTenantsByPortfolio.map((item, i) => (
+                          <div key={item.tenant.tenantId} className="flex items-center justify-between p-2 rounded-lg bg-slate-50 border border-slate-100 text-xs">
+                            <div className="min-w-0 flex-1 pr-2">
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-bold text-slate-400 text-[10px]">#{i + 1}</span>
+                                <p className="font-bold text-slate-900 truncate">{item.tenant.name}</p>
+                              </div>
+                              <p className="text-[10px] text-slate-500 mt-0.5 font-mono">
+                                {item.loansCount} crédito(s) colocados
+                              </p>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <p className="font-black text-emerald-700 text-xs">{formatCOP(item.totalAmount)}</p>
+                              <p className="text-[9px] text-slate-400">Total prestado</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Ranking 3: Organizaciones con Deuda Pendiente de Licencias / Cuotas */}
                 <div className="rounded-xl border border-slate-200 bg-white p-3.5 space-y-2.5 shadow-2xs">
                   <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                     <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                      <AlertTriangle size={14} className="text-amber-600" /> Deuda de Planes y Cuotas
+                      <AlertTriangle size={14} className="text-amber-600" /> Deuda de Planes y Facturación
                     </span>
                     <Badge variant="warning" className="text-[9px] px-1.5">Pendiente</Badge>
                   </div>
