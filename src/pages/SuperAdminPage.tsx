@@ -46,6 +46,7 @@ import {
   XCircle,
   Printer,
   Scale,
+  RefreshCw,
 } from 'lucide-react';
 import type {
   BankAccountInfo,
@@ -74,6 +75,7 @@ import { Input, Label, Select } from '../components/ui/input';
 import { Switch } from '../components/ui/switch';
 import { TBody, TD, TH, THead, TR, TableWrap } from '../components/ui/table';
 import { useToast } from '../components/ui/toast';
+import { PortalShareModal } from '../components/PortalShareModal';
 import { isSyncConfigured, purgeDocsFromCloud, runSync } from '../lib/sync/syncEngine';
 import { exportBackup } from '../lib/backup';
 import { generateLicenseKey, offlineLinkFor } from '../lib/offlineEdition';
@@ -1474,6 +1476,7 @@ export default function SuperAdminPage() {
       adminUid: adminUserId,
       status: 'ACTIVE',
       clientPortalEnabled: false,
+      settingsModuleEnabled: true,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       syncStatus: 'PENDING',
@@ -1546,6 +1549,39 @@ export default function SuperAdminPage() {
         next
           ? 'Portal de clientes HABILITADO. Usa el botón «Enlace» para compartirlo con los clientes.'
           : 'Portal de clientes deshabilitado.',
+        'success',
+      );
+      pushToCloud();
+    } finally {
+      setTogglingTenantId(null);
+    }
+  }
+
+  async function toggleSettings(tenant: Tenant) {
+    if (!session || togglingTenantId) return;
+    setTogglingTenantId(tenant.tenantId);
+    try {
+      const current = tenant.settingsModuleEnabled !== false;
+      const next = !current;
+      await saveTenant({
+        ...tenant,
+        settingsModuleEnabled: next,
+        updatedAt: new Date().toISOString(),
+        syncStatus: 'PENDING',
+      });
+      await logAudit({
+        tenantId: '',
+        action: 'TENANT_UPDATED',
+        actorId: session.userId,
+        actorName: session.displayName,
+        entityId: tenant.tenantId,
+        entityType: 'tenants',
+        payloadSnapshot: { campo: 'settingsModuleEnabled', valor: next },
+      });
+      toast(
+        next
+          ? 'Módulo de Configuración HABILITADO para la organización.'
+          : 'Módulo de Configuración DESHABILITADO. Se ocultará de la navegación de los clientes.',
         'success',
       );
       pushToCloud();
@@ -2004,6 +2040,7 @@ export default function SuperAdminPage() {
           <TH>Estado</TH>
           <TH>Control cuenta</TH>
           <TH>Portal cliente</TH>
+          <TH>Configuración</TH>
           <TH className="text-right">Acciones</TH>
         </THead>
         <TBody>
@@ -2179,6 +2216,20 @@ export default function SuperAdminPage() {
                     />
                     <Badge variant={t.clientPortalEnabled ? 'info' : 'muted'}>
                       {t.clientPortalEnabled ? 'ON' : 'OFF'}
+                    </Badge>
+                  </div>
+                </TD>
+
+                <TD>
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={t.settingsModuleEnabled !== false}
+                      onChange={() => void toggleSettings(t)}
+                      disabled={togglingTenantId === t.tenantId}
+                      label="Módulo Configuración"
+                    />
+                    <Badge variant={t.settingsModuleEnabled !== false ? 'info' : 'muted'}>
+                      {t.settingsModuleEnabled !== false ? 'ON' : 'OFF'}
                     </Badge>
                   </div>
                 </TD>
@@ -3303,44 +3354,12 @@ export default function SuperAdminPage() {
         </div>
       </Dialog>
 
-      <Dialog
+      <PortalShareModal
         open={portalLinkTarget !== null}
         onClose={() => setPortalLinkTarget(null)}
-        title={`Portal de clientes · ${portalLinkTarget?.name ?? ''}`}
-        description="Comparte este enlace con los clientes de la organización para que consulten su crédito sin llamar."
-      >
-        <div className="space-y-3">
-          <div className="flex items-center gap-2">
-            <Input value={portalUrlFor(portalLinkTarget)} readOnly className="font-mono text-xs" />
-            <Button size="sm" variant="secondary" onClick={() => void copyPortalLink()}>
-              <Copy size={14} /> Copiar
-            </Button>
-          </div>
-          <div className="rounded-lg bg-sky-50 px-3 py-2 text-xs leading-relaxed text-sky-800">
-            <p className="font-semibold">Cómo ingresa el cliente</p>
-            <ol className="mt-1 list-inside list-decimal">
-              <li>Abre el enlace (funciona en cualquier navegador, no requiere instalar nada)</li>
-              <li>Selecciona la organización «{portalLinkTarget?.name}»</li>
-              <li>Escribe su número de documento</li>
-              <li>Escribe los últimos 4 dígitos de su teléfono registrado</li>
-            </ol>
-            <p className="mt-1">Verá saldo, estado y próxima cuota de cada préstamo activo.</p>
-          </div>
-          <p className="text-[11px] text-slate-400">
-            Este enlace es EXCLUSIVO para «{portalLinkTarget?.name}»: el cliente no verá otras
-            organizaciones, evitando confusiones y registros duplicados. Los clientes solo pueden
-            consultar y solicitar; no pueden modificar nada.
-          </p>
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setPortalLinkTarget(null)}>
-              Cerrar
-            </Button>
-            <Button variant="secondary" onClick={sharePortalByWhatsApp}>
-              Compartir por WhatsApp
-            </Button>
-          </div>
-        </div>
-      </Dialog>
+        portalUrl={portalUrlFor(portalLinkTarget)}
+        orgName={portalLinkTarget?.name ?? ''}
+      />
 
       <Dialog
         open={offlineTarget !== null}
@@ -3900,6 +3919,12 @@ service cloud.firestore {
       allow create, update: if hasValidTenantId() && request.resource.data.reportId is string;
       allow delete: if true;
     }
+
+    match /legal_acceptances/{doc} {
+      allow read: if true;
+      allow create, update: if hasValidTenantId() && request.resource.data.acceptanceId is string;
+      allow delete: if true;
+    }
   }
 }`}</pre>
           </div>
@@ -3972,6 +3997,12 @@ service cloud.firestore {
     match /payment_reports/{doc} {
       allow read: if true;
       allow create, update: if hasValidTenantId() && request.resource.data.reportId is string;
+      allow delete: if true;
+    }
+
+    match /legal_acceptances/{doc} {
+      allow read: if true;
+      allow create, update: if hasValidTenantId() && request.resource.data.acceptanceId is string;
       allow delete: if true;
     }
   }

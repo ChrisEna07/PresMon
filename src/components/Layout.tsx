@@ -710,8 +710,10 @@ export default function Layout() {
   } else if (session?.role === 'SOCIO') {
     navItems = [
       { to: '/socio', label: 'Ruta de Cobro', icon: Smartphone, end: true },
-      { to: '/settings', label: 'Ajustes', icon: Settings },
     ];
+    if (tenantRecord?.settingsModuleEnabled !== false) {
+      navItems.push({ to: '/settings', label: 'Ajustes', icon: Settings });
+    }
   } else {
     // Administrador u operador de la Organización
     navItems = [
@@ -739,7 +741,10 @@ export default function Layout() {
       navItems.push({ to: '/socio', label: 'Módulo Socio', icon: Smartphone });
     }
 
-    navItems.push({ to: '/settings', label: 'Ajustes', icon: Settings });
+    // Módulo de Configuración / Ajustes (Beneficio configurable por Super Admin)
+    if (tenantRecord?.settingsModuleEnabled !== false) {
+      navItems.push({ to: '/settings', label: 'Ajustes', icon: Settings });
+    }
   }
 
   // Prevenir parpadeo o montaje de rutas durante F5 si el registro del tenant aún está cargando
@@ -1623,7 +1628,28 @@ export default function Layout() {
               </div>
             </div>
           )}
-          {appLocked ? null : <Outlet />}
+          {appLocked ? null : session?.role !== 'SUPER_ADMIN' && tenantRecord?.settingsModuleEnabled === false && location.pathname === '/settings' ? (
+            <div className="mx-auto max-w-lg rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm my-12">
+              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-100 text-amber-600 mb-4">
+                <Settings size={28} />
+              </div>
+              <h3 className="text-lg font-bold text-slate-900">Módulo de Configuración Deshabilitado</h3>
+              <p className="mt-2 text-sm text-slate-500 leading-relaxed">
+                El acceso al módulo de configuración ha sido desactivado para tu organización por el Super Administrador. Si requieres modificar parámetros del sistema, comunícate con el soporte técnico.
+              </p>
+              <div className="mt-6 flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => navigate('/')}
+                  className="cursor-pointer rounded-xl bg-slate-900 px-5 py-2.5 text-xs font-semibold text-white hover:bg-slate-800 transition-colors shadow-sm"
+                >
+                  Volver al Inicio
+                </button>
+              </div>
+            </div>
+          ) : (
+            <Outlet />
+          )}
         </main>
       </div>
 

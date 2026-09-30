@@ -204,6 +204,8 @@ export interface Tenant extends BaseRecord {
   auditModuleEnabled?: boolean;
   /** Beneficio activable por SuperAdmin/Org: acceso al módulo de Socio (cobradores de campo). */
   socioModuleEnabled?: boolean;
+  /** Beneficio activable por SuperAdmin: acceso al módulo de configuraciones del sistema. */
+  settingsModuleEnabled?: boolean;
   /** Enlaces/tokens de un solo uso generados para el acceso del socio. */
   singleUseSocioTokens?: SingleUseSocioToken[];
 }
@@ -273,6 +275,10 @@ export interface ServicePlan extends BaseRecord {
   appPaymentMode?: AppPaymentMode;
   /** Valor total acordado de la app (modo contado). */
   appTotalAmount?: number;
+  /** Tasa de interés sugerida/aplicada al financiar la app por cuotas (ej. 5, 8, 10%). */
+  financingInterestRate?: number;
+  /** Valor total a pagar por la app incluyendo el recargo por financiación de cuotas. */
+  financingTotalWithInterest?: number;
   /** Mensualidad recurrente de servicios cloud, independiente del pago de la app (0 = sin cobro). */
   cloudMonthlyFee?: number;
   /** Día del mes (1-28) en que vence la mensualidad cloud. */

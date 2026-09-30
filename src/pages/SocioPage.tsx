@@ -477,8 +477,19 @@ export default function SocioPage() {
   async function handleCreateBorrower(e: FormEvent) {
     e.preventDefault();
     if (!effectiveTenantId) return;
-    if (!newFullName.trim() || !newPhone.trim() || !newDocNumber.trim()) {
+    const cleanDoc =
+      newDocType === 'CC' || newDocType === 'TI'
+        ? newDocNumber.replace(/\D/g, '')
+        : newDocType === 'NIT'
+        ? newDocNumber.replace(/[^0-9-]/g, '')
+        : newDocNumber.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+
+    if (!newFullName.trim() || !newPhone.trim() || !cleanDoc) {
       toast('Completa nombre, documento y teléfono del cliente.', 'error');
+      return;
+    }
+    if ((newDocType === 'CC' || newDocType === 'TI') && !/^\d{4,12}$/.test(cleanDoc)) {
+      toast('El documento de identidad debe contener solo números (sin letras).', 'error');
       return;
     }
 
@@ -930,7 +941,15 @@ export default function SocioPage() {
                 <Label className="text-xs text-slate-300">Tipo Doc.</Label>
                 <Select
                   value={newDocType}
-                  onChange={(e) => setNewDocType(e.target.value as any)}
+                  onChange={(e) => {
+                    const t = e.target.value as any;
+                    setNewDocType(t);
+                    if (t === 'CC' || t === 'TI') {
+                      setNewDocNumber((p) => p.replace(/\D/g, ''));
+                    } else if (t === 'NIT') {
+                      setNewDocNumber((p) => p.replace(/[^0-9-]/g, ''));
+                    }
+                  }}
                   className="mt-1 bg-slate-800 border-slate-700 text-white text-xs"
                 >
                   <option value="CC">CC</option>
@@ -944,10 +963,20 @@ export default function SocioPage() {
                 <Label className="text-xs text-slate-300">Número de Documento *</Label>
                 <Input
                   value={newDocNumber}
-                  onChange={(e) => setNewDocNumber(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (newDocType === 'CC' || newDocType === 'TI') {
+                      setNewDocNumber(val.replace(/\D/g, ''));
+                    } else if (newDocType === 'NIT') {
+                      setNewDocNumber(val.replace(/[^0-9-]/g, ''));
+                    } else {
+                      setNewDocNumber(val.replace(/[^a-zA-Z0-9]/g, '').toUpperCase());
+                    }
+                  }}
                   required
                   className="mt-1 bg-slate-800 border-slate-700 text-white text-xs"
-                  placeholder="Ej. 1020304050"
+                  placeholder={newDocType === 'CC' || newDocType === 'TI' ? 'Solo números (ej. 1020304050)' : 'Ej. 1020304050'}
+                  inputMode={newDocType === 'CC' || newDocType === 'TI' ? 'numeric' : 'text'}
                 />
               </div>
             </div>

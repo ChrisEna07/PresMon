@@ -33,6 +33,7 @@ import { Card, CardContent } from '../components/ui/card';
 import { Dialog } from '../components/ui/dialog';
 import { Input, Label, Select } from '../components/ui/input';
 import { useToast } from '../components/ui/toast';
+import { PortalShareModal } from '../components/PortalShareModal';
 
 type Filter = 'PENDING' | 'APPROVED' | 'REJECTED' | 'ALL';
 
@@ -75,6 +76,7 @@ export default function RequestsPage() {
   const [working, setWorking] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [cloudRows, setCloudRows] = useState<LoanRequest[]>([]);
+  const [portalModalOpen, setPortalModalOpen] = useState(false);
 
   async function fetchNewRequests() {
     if (!isSyncConfigured()) {
@@ -407,8 +409,20 @@ export default function RequestsPage() {
         description="Clientes que solicitaron un préstamo desde el portal · verifica el soporte y aprueba el desembolso"
         actions={
           <div className="flex flex-wrap gap-2">
-            <Button variant="secondary" size="sm" onClick={sharePortalInvite} title="Enviar a tus clientes el enlace para solicitar crédito">
-              <Link2 size={14} /> Enlace para clientes
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                if (tenant && tenant.clientPortalEnabled === false) {
+                  toast('El portal de clientes está deshabilitado para tu organización. Solicita su activación a ChrizDev.', 'error');
+                  return;
+                }
+                setPortalModalOpen(true);
+              }}
+              title="Compartir enlace y código QR con tus clientes"
+              className="gap-1.5"
+            >
+              <Link2 size={14} /> Enlace y QR Clientes
             </Button>
             <Button variant="outline" size="sm" onClick={() => void fetchNewRequests()} disabled={refreshing}>
               {refreshing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
@@ -676,6 +690,15 @@ export default function RequestsPage() {
           </form>
         )}
       </Dialog>
+
+      {portalModalOpen && (
+        <PortalShareModal
+          open={portalModalOpen}
+          onClose={() => setPortalModalOpen(false)}
+          portalUrl={`${window.location.origin}/portal?t=${tenantId}`}
+          orgName={tenant?.name ?? 'nuestra organización'}
+        />
+      )}
     </div>
   );
 }

@@ -5,6 +5,7 @@ import {
   ArrowUpRight,
   BadgeCheck,
   Building2,
+  Calculator,
   CalendarPlus,
   Cloud,
   Copy,
@@ -85,6 +86,13 @@ export default function SuperPlansPage() {
   const [genStart, setGenStart] = useState(today);
   const [genEveryDays, setGenEveryDays] = useState('30');
   const [saving, setSaving] = useState(false);
+
+  // Estados para la Calculadora Financiera Inteligente de Cuotas
+  const [calcBasePrice, setCalcBasePrice] = useState('150000');
+  const [calcInstallmentsCount, setCalcInstallmentsCount] = useState('3');
+  const [calcInterestRate, setCalcInterestRate] = useState('5');
+  const [calcEveryDays, setCalcEveryDays] = useState('30');
+  const [calcStartDate, setCalcStartDate] = useState(today);
 
   // Servicios y Beneficios del Plan
   const [servicesList, setServicesList] = useState<PlanServiceItem[]>(DEFAULT_PLAN_SERVICES);
@@ -186,6 +194,26 @@ export default function SuperPlansPage() {
         : [],
     );
 
+    if (existing?.financingInterestRate != null) {
+      setCalcInterestRate(String(existing.financingInterestRate));
+    } else {
+      setCalcInterestRate('5');
+    }
+    if (existing?.financingTotalWithInterest != null && existing.financingTotalWithInterest > 0) {
+      const rate = existing.financingInterestRate || 0;
+      const base = rate > 0 ? Math.round(existing.financingTotalWithInterest / (1 + rate / 100)) : existing.financingTotalWithInterest;
+      setCalcBasePrice(String(base));
+    } else if (existing?.appTotalAmount != null && existing.appTotalAmount > 0) {
+      setCalcBasePrice(String(existing.appTotalAmount));
+    } else {
+      setCalcBasePrice('150000');
+    }
+    if (existing?.installments && existing.installments.length > 0) {
+      setCalcInstallmentsCount(String(existing.installments.length));
+    } else {
+      setCalcInstallmentsCount('3');
+    }
+
     if (existing?.services && existing.services.length > 0) {
       const map = new Map(existing.services.map((s) => [s.id, s]));
       setServicesList(
@@ -230,6 +258,48 @@ export default function SuperPlansPage() {
       },
     ]);
     setDirty(true);
+  }
+
+  function getRecommendedRate(cuotas: number): number {
+    if (cuotas <= 1) return 0;
+    if (cuotas <= 2) return 3;
+    if (cuotas <= 4) return 5;
+    if (cuotas <= 6) return 8;
+    return 10;
+  }
+
+  const calcBaseNum = useMemo(() => Math.max(0, Number(calcBasePrice) || 0), [calcBasePrice]);
+  const calcCuotasNum = useMemo(() => Math.max(1, Math.min(36, Number(calcInstallmentsCount) || 1)), [calcInstallmentsCount]);
+  const calcRateNum = useMemo(() => Math.max(0, Number(calcInterestRate) || 0), [calcInterestRate]);
+  const calcTotalInterest = useMemo(() => Math.round(calcBaseNum * (calcRateNum / 100)), [calcBaseNum, calcRateNum]);
+  const calcTotalFinanced = useMemo(() => calcBaseNum + calcTotalInterest, [calcBaseNum, calcTotalInterest]);
+  const calcInstallmentAmount = useMemo(() => Math.round(calcTotalFinanced / calcCuotasNum), [calcTotalFinanced, calcCuotasNum]);
+
+  function generateFinancedSchedule() {
+    if (calcBaseNum <= 0) {
+      toast('Escribe el precio base de la app para calcular las cuotas.', 'error');
+      return;
+    }
+    const every = Math.max(1, Number(calcEveryDays) || 30);
+    const baseCuota = Math.floor(calcTotalFinanced / calcCuotasNum);
+    const remainder = calcTotalFinanced - baseCuota * calcCuotasNum;
+
+    const generated: PlanInstallment[] = Array.from({ length: calcCuotasNum }, (_, i) => ({
+      installmentId: uid(),
+      dueDate: addDaysStr(calcStartDate, i * every),
+      amount: i === calcCuotasNum - 1 ? baseCuota + remainder : baseCuota,
+      concept: `Cuota ${i + 1}/${calcCuotasNum} Licencia PresMon${calcRateNum > 0 ? ` (con ${calcRateNum}% int)` : ''}`,
+      status: 'PENDING',
+    }));
+
+    setRows(generated);
+    setGenAmount(String(calcInstallmentAmount));
+    setGenCount(String(calcCuotasNum));
+    setDirty(true);
+    toast(
+      `${calcCuotasNum} cuotas generadas por total ${formatCOP(calcTotalFinanced)} (${calcRateNum}% interés incluido). Recuerda guardar.`,
+      'success',
+    );
   }
 
   function generateSchedule() {
@@ -292,6 +362,8 @@ export default function SuperPlansPage() {
           payMode === 'FULL'
             ? Math.max(0, Math.round(Number(appTotal) || 0))
             : rows.reduce((s, r) => s + (Number(r.amount) || 0), 0),
+        financingInterestRate: payMode === 'INSTALLMENTS' ? (Number(calcInterestRate) || 0) : undefined,
+        financingTotalWithInterest: payMode === 'INSTALLMENTS' ? rows.reduce((s, r) => s + (Number(r.amount) || 0), 0) : undefined,
         cloudMonthlyFee: Math.max(0, Math.round(Number(cloudFee) || 0)),
         cloudBillingDay: Math.min(28, Math.max(1, Number(cloudBillingDay) || 1)),
         cloudPaidThrough: existing?.cloudPaidThrough,
@@ -996,38 +1068,224 @@ export default function SuperPlansPage() {
             </div>
           ) : (
             <>
-              <Card className="mb-4">
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <CalendarPlus size={16} /> Generador de cronograma
-                  </CardTitle>
+              <Card className="mb-4 border-emerald-200 bg-gradient-to-b from-emerald-50/40 via-white to-white shadow-sm">
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <CardTitle className="flex items-center gap-2 text-base text-slate-800">
+                      <Calculator size={18} className="text-emerald-600" />
+                      Calculadora Financiera Inteligente de Cuotas
+                    </CardTitle>
+                    <Badge variant="success" className="text-xs">
+                      Sincronizado con Recaudos y Facturación
+                    </Badge>
+                  </div>
+                  <CardDescription className="text-xs text-slate-500">
+                    Establece el precio base acordado, selecciona el número de cuotas y define una tasa de interés recomendable. El sistema calculará el total financiado y generará el cronograma exacto para el control de pagos y banners de cobro.
+                  </CardDescription>
                 </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-2 items-end gap-3 sm:grid-cols-5">
+                <CardContent className="space-y-4">
+                  {/* Fila 1: Parámetros Base */}
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
                     <div>
-                      <Label>Cuotas</Label>
-                      <Input value={genCount} onChange={(e) => setGenCount(e.target.value)} inputMode="numeric" />
+                      <Label className="text-xs font-semibold text-slate-700">Precio Base de la App ($)</Label>
+                      <Input
+                        value={calcBasePrice}
+                        onChange={(e) => {
+                          setCalcBasePrice(e.target.value.replace(/\D/g, ''));
+                          setDirty(true);
+                        }}
+                        inputMode="numeric"
+                        placeholder="150000"
+                        className="text-xs font-medium"
+                      />
+                      <span className="text-[10px] text-slate-400">Capital de contado acordado</span>
                     </div>
+
                     <div>
-                      <Label>Valor c/u</Label>
-                      <Input value={genAmount} onChange={(e) => setGenAmount(e.target.value)} inputMode="numeric" placeholder="150000" />
-                    </div>
-                    <div>
-                      <Label>Desde</Label>
-                      <Input type="date" value={genStart} onChange={(e) => setGenStart(e.target.value)} />
-                    </div>
-                    <div>
-                      <Label>Cada (días)</Label>
-                      <Select value={genEveryDays} onChange={(e) => setGenEveryDays(e.target.value)}>
-                        <option value="7">7 (semanal)</option>
-                        <option value="15">15 (quincenal)</option>
-                        <option value="30">30 (mensual)</option>
-                        <option value="60">60 (bimestral)</option>
-                        <option value="90">90 (trimestral)</option>
+                      <Label className="text-xs font-semibold text-slate-700">Número de Cuotas</Label>
+                      <Select
+                        value={calcInstallmentsCount}
+                        onChange={(e) => {
+                          const c = e.target.value;
+                          setCalcInstallmentsCount(c);
+                          const suggested = getRecommendedRate(Number(c) || 1);
+                          setCalcInterestRate(String(suggested));
+                          setDirty(true);
+                        }}
+                        className="text-xs"
+                      >
+                        <option value="1">1 cuota (30 días)</option>
+                        <option value="2">2 cuotas</option>
+                        <option value="3">3 cuotas (Recomendado)</option>
+                        <option value="4">4 cuotas</option>
+                        <option value="6">6 cuotas</option>
+                        <option value="8">8 cuotas</option>
+                        <option value="10">10 cuotas</option>
+                        <option value="12">12 cuotas (1 año)</option>
                       </Select>
+                      <span className="text-[10px] text-slate-400">Plazo total de financiación</span>
                     </div>
-                    <Button variant="secondary" onClick={generateSchedule}>
-                      Generar cuotas
+
+                    <div>
+                      <Label className="text-xs font-semibold text-slate-700">Frecuencia de Pago</Label>
+                      <Select
+                        value={calcEveryDays}
+                        onChange={(e) => {
+                          setCalcEveryDays(e.target.value);
+                          setDirty(true);
+                        }}
+                        className="text-xs"
+                      >
+                        <option value="15">Cada 15 días (Quincenal)</option>
+                        <option value="30">Cada 30 días (Mensual)</option>
+                        <option value="60">Cada 60 días (Bimestral)</option>
+                      </Select>
+                      <span className="text-[10px] text-slate-400">Intervalo entre vencimientos</span>
+                    </div>
+
+                    <div>
+                      <Label className="text-xs font-semibold text-slate-700">Primer Vencimiento</Label>
+                      <Input
+                        type="date"
+                        value={calcStartDate}
+                        onChange={(e) => {
+                          setCalcStartDate(e.target.value);
+                          setDirty(true);
+                        }}
+                        className="text-xs"
+                      />
+                      <span className="text-[10px] text-slate-400">Fecha de la 1ª cuota</span>
+                    </div>
+                  </div>
+
+                  {/* Fila 2: Tasa de Interés con Sugerencia Inteligente */}
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
+                      <div className="flex items-center gap-2">
+                        <Label className="text-xs font-bold text-slate-800 m-0">
+                          Tasa de Interés por Financiación (%)
+                        </Label>
+                        <Badge variant="outline" className="text-[11px] bg-emerald-50 text-emerald-700 border-emerald-300">
+                          Sugerida: {getRecommendedRate(calcCuotasNum)}%
+                        </Badge>
+                      </div>
+                      <span className="text-[11px] text-slate-500">
+                        Selecciona una tasa sugerida o escribe tu propio porcentaje personalizado:
+                      </span>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="w-32">
+                        <Input
+                          value={calcInterestRate}
+                          onChange={(e) => {
+                            setCalcInterestRate(e.target.value.replace(/[^0-9.]/g, ''));
+                            setDirty(true);
+                          }}
+                          placeholder="5"
+                          inputMode="decimal"
+                          className="text-xs font-bold bg-white"
+                        />
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            setCalcInterestRate('0');
+                            setDirty(true);
+                          }}
+                          className={`text-[11px] h-7 px-2.5 cursor-pointer ${calcRateNum === 0 ? 'bg-slate-800 text-white hover:bg-slate-700' : 'bg-white'}`}
+                        >
+                          0% (Sin Interés)
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            setCalcInterestRate('3');
+                            setDirty(true);
+                          }}
+                          className={`text-[11px] h-7 px-2.5 cursor-pointer ${calcRateNum === 3 ? 'bg-emerald-700 text-white hover:bg-emerald-800' : 'bg-white'}`}
+                        >
+                          3%
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            setCalcInterestRate('5');
+                            setDirty(true);
+                          }}
+                          className={`text-[11px] h-7 px-2.5 cursor-pointer ${calcRateNum === 5 ? 'bg-emerald-700 text-white hover:bg-emerald-800' : 'bg-white'}`}
+                        >
+                          5% (Estándar)
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            setCalcInterestRate('8');
+                            setDirty(true);
+                          }}
+                          className={`text-[11px] h-7 px-2.5 cursor-pointer ${calcRateNum === 8 ? 'bg-emerald-700 text-white hover:bg-emerald-800' : 'bg-white'}`}
+                        >
+                          8%
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            setCalcInterestRate('10');
+                            setDirty(true);
+                          }}
+                          className={`text-[11px] h-7 px-2.5 cursor-pointer ${calcRateNum === 10 ? 'bg-emerald-700 text-white hover:bg-emerald-800' : 'bg-white'}`}
+                        >
+                          10%
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Fila 3: Simulación en Vivo */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                    <div className="p-3 bg-white rounded-xl border border-slate-200 shadow-xs">
+                      <p className="text-[10px] uppercase font-bold text-slate-400">Capital Base</p>
+                      <p className="text-sm font-bold text-slate-800 mt-0.5">{formatCOP(calcBaseNum)}</p>
+                    </div>
+
+                    <div className="p-3 bg-white rounded-xl border border-slate-200 shadow-xs">
+                      <p className="text-[10px] uppercase font-bold text-slate-400">Interés ({calcRateNum}%)</p>
+                      <p className="text-sm font-bold text-amber-600 mt-0.5">+{formatCOP(calcTotalInterest)}</p>
+                    </div>
+
+                    <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 shadow-xs">
+                      <p className="text-[10px] uppercase font-bold text-emerald-800">Total a Recaudar</p>
+                      <p className="text-sm font-extrabold text-emerald-900 mt-0.5">{formatCOP(calcTotalFinanced)}</p>
+                    </div>
+
+                    <div className="p-3 bg-sky-50 rounded-xl border border-sky-200 shadow-xs">
+                      <p className="text-[10px] uppercase font-bold text-sky-800">Valor c/u ({calcCuotasNum} cuotas)</p>
+                      <p className="text-sm font-extrabold text-sky-900 mt-0.5">{formatCOP(calcInstallmentAmount)}</p>
+                    </div>
+                  </div>
+
+                  {/* Botón de Aplicar */}
+                  <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2 border-t border-slate-100">
+                    <p className="text-[11px] text-slate-500">
+                      Al aplicar, se generará el cronograma de {calcCuotasNum} cuotas escalonadas por {formatCOP(calcInstallmentAmount)} c/u.
+                    </p>
+                    <Button
+                      type="button"
+                      onClick={generateFinancedSchedule}
+                      className="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs gap-1.5 shadow-sm cursor-pointer"
+                    >
+                      <Sparkles size={14} /> Aplicar Cronograma Financiado
                     </Button>
                   </div>
                 </CardContent>

@@ -729,17 +729,19 @@ export default function ClientPortalPage() {
                       <Label>Número de documento</Label>
                       <Input
                         value={documentNumber}
-                        onChange={(e) => setDocumentNumber(e.target.value)}
-                        placeholder="Ej: 1020304050"
+                        onChange={(e) => setDocumentNumber(e.target.value.replace(/\D/g, ''))}
+                        placeholder="Ej: 1020304050 (solo números)"
+                        inputMode="numeric"
                       />
                     </div>
                     <div>
                       <Label>Últimos 4 dígitos de tu teléfono</Label>
                       <Input
                         value={phoneLast4}
-                        onChange={(e) => setPhoneLast4(e.target.value)}
+                        onChange={(e) => setPhoneLast4(e.target.value.replace(/\D/g, '').slice(0, 4))}
                         maxLength={4}
                         placeholder="1234"
+                        inputMode="numeric"
                       />
                     </div>
                   </>

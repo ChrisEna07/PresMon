@@ -103,16 +103,31 @@ export default function BorrowersPage() {
     setDialogOpen(true);
   }
 
+  function sanitizeDocNumber(val: string, type: DocumentType): string {
+    if (type === 'CC' || type === 'TI') {
+      return val.replace(/\D/g, '');
+    }
+    if (type === 'NIT') {
+      return val.replace(/[^0-9-]/g, '');
+    }
+    return val.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+  }
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!session) return;
-    if (!form.fullName.trim() || !form.documentNumber.trim()) {
+    const cleanDoc = sanitizeDocNumber(form.documentNumber.trim(), form.documentType);
+    if (!form.fullName.trim() || !cleanDoc) {
       toast('Nombre y número de documento son obligatorios.', 'error');
+      return;
+    }
+    if ((form.documentType === 'CC' || form.documentType === 'TI') && !/^\d{4,12}$/.test(cleanDoc)) {
+      toast('El documento de identidad debe contener únicamente números válidos (sin letras).', 'error');
       return;
     }
     const duplicate = (borrowers ?? []).find(
       (b) =>
-        b.documentNumber === form.documentNumber.trim() &&
+        b.documentNumber === cleanDoc &&
         b.documentType === form.documentType &&
         b.borrowerId !== editingId,
     );
@@ -306,7 +321,14 @@ export default function BorrowersPage() {
               <Label>Tipo de documento</Label>
               <Select
                 value={form.documentType}
-                onChange={(e) => setForm({ ...form, documentType: e.target.value as DocumentType })}
+                onChange={(e) => {
+                  const newType = e.target.value as DocumentType;
+                  setForm({
+                    ...form,
+                    documentType: newType,
+                    documentNumber: sanitizeDocNumber(form.documentNumber, newType),
+                  });
+                }}
               >
                 {(Object.keys(DOCUMENT_TYPE_LABELS) as DocumentType[]).map((d) => (
                   <option key={d} value={d}>
@@ -319,7 +341,20 @@ export default function BorrowersPage() {
               <Label>Número de documento *</Label>
               <Input
                 value={form.documentNumber}
-                onChange={(e) => setForm({ ...form, documentNumber: e.target.value })}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    documentNumber: sanitizeDocNumber(e.target.value, form.documentType),
+                  })
+                }
+                placeholder={
+                  form.documentType === 'CC' || form.documentType === 'TI'
+                    ? 'Solo números (sin letras)'
+                    : form.documentType === 'NIT'
+                    ? 'Ej: 900123456-1'
+                    : 'Ej: AA123456'
+                }
+                inputMode={form.documentType === 'CC' || form.documentType === 'TI' ? 'numeric' : 'text'}
               />
             </div>
           </div>
