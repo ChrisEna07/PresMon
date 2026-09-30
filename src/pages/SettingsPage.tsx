@@ -17,6 +17,7 @@ import {
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/db';
 import { useAuth } from '../store/auth';
+import { isOfflineEdition } from '../lib/offlineEdition';
 import { openWhatsApp, openWhatsAppDev, CHRIZDEV_WHATSAPP_DISPLAY } from '../lib/share';
 import {
   clearFirebaseConfig,
@@ -70,6 +71,10 @@ export default function SettingsPage() {
     () => (session && !isSuperAdmin ? db.tenants.get(session.tenantId) : undefined),
     [session?.tenantId, isSuperAdmin],
   );
+
+  const isOffline = isOfflineEdition() || Boolean(tenant?.offlineLicense);
+  // La versión offline NUNCA está bloqueada. Para online, solo si el SuperAdmin lo desactivó explícitamente.
+  const isSettingsBlocked = !isSuperAdmin && !isOffline && tenant?.settingsModuleEnabled === false;
   const portalUrl =
     session && !isSuperAdmin
       ? `${window.location.origin}/portal?t=${session.tenantId}`
@@ -247,7 +252,7 @@ export default function SettingsPage() {
     <div className="relative max-w-3xl">
       <PageHeader title="Ajustes" description="Seguridad, respaldos y mantenimiento local" />
 
-      {!isSuperAdmin && (
+      {isSettingsBlocked && (
         <div className="absolute inset-x-0 top-20 bottom-0 z-30 flex items-start justify-center pt-8 sm:pt-14 pointer-events-auto">
           <div className="mx-4 w-full max-w-md rounded-2xl border border-slate-200/90 bg-white/95 p-6 md:p-8 text-center shadow-2xl backdrop-blur-xl ring-1 ring-slate-900/10">
             <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-500/10 text-amber-600 ring-8 ring-amber-500/5">
@@ -289,7 +294,29 @@ export default function SettingsPage() {
         </div>
       )}
 
-      <div className={!isSuperAdmin ? 'filter blur-sm select-none pointer-events-none opacity-30 transition-all' : undefined}>
+      <div className={isSettingsBlocked ? 'filter blur-sm select-none pointer-events-none opacity-30 transition-all' : undefined}>
+        {/* Banner para Edición Offline */}
+        {isOffline && (
+          <Card className="mb-4 border-amber-300 bg-amber-50/70 shadow-sm">
+            <CardContent className="flex items-start sm:items-center gap-3 py-4">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-amber-500/10 text-amber-700 ring-4 ring-amber-500/5">
+                <DatabaseBackup size={22} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="text-sm font-bold text-slate-900">Edición Offline PresMon (Licencia 100% Pagada)</h3>
+                  <span className="rounded-full bg-amber-200/90 px-2 py-0.5 text-[10px] font-black text-amber-900 uppercase">
+                    Autónomo Local
+                  </span>
+                </div>
+                <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                  Esta organización opera sin sincronización en la nube ni control de APIs externas. Tu base de datos es 100% local en este equipo. Usa los botones de exportar respaldo para salvaguardar tu información.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {isSuperAdmin && (
         <Card className="mb-4">
           <CardHeader>
@@ -362,7 +389,7 @@ export default function SettingsPage() {
         </Card>
       )}
 
-      {!isSuperAdmin && (
+      {!isSuperAdmin && !isOffline && (
         <Card className="mb-4">
           <CardContent className="flex flex-wrap items-center justify-between gap-3 py-4">
             <div className="flex items-center gap-2 text-sm text-slate-600">
@@ -377,7 +404,7 @@ export default function SettingsPage() {
         </Card>
       )}
 
-      {!isSuperAdmin && (
+      {!isSuperAdmin && !isOffline && (
         <Card className="mb-4">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">

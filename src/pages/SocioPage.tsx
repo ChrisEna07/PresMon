@@ -61,16 +61,24 @@ export default function SocioPage() {
     return null;
   });
 
-  const [tokenStatus, setTokenStatus] = useState<'validating' | 'ready' | 'error' | 'unlinked'>(
-    urlToken ? 'validating' : activeSession ? 'ready' : 'unlinked',
-  );
+  const [tokenStatus, setTokenStatus] = useState<
+    'validating' | 'needs_name' | 'ready' | 'error' | 'unlinked'
+  >(urlToken ? 'validating' : activeSession ? 'ready' : 'unlinked');
   const [errorMessage, setErrorMessage] = useState('');
   const [syncing, setSyncing] = useState(false);
   const [activeTab, setActiveTab] = useState<'route' | 'borrowers' | 'new-borrower'>('route');
   const [searchQuery, setSearchQuery] = useState('');
 
+  // Identificación del Socio
+  const [pendingRedeemTenant, setPendingRedeemTenant] = useState<Tenant | null>(null);
+  const [pendingToken, setPendingToken] = useState<SingleUseSocioToken | null>(null);
+  const [socioNameInput, setSocioNameInput] = useState('');
+  const [editNameModalOpen, setEditNameModalOpen] = useState(false);
+  const [editNameInput, setEditNameInput] = useState('');
+
   // Estados de cobro
   const [collectModalOpen, setCollectModalOpen] = useState(false);
+  const [collectMode, setCollectMode] = useState<'FULL' | 'ABONO' | 'OFF_DATE'>('FULL');
   const [targetLoan, setTargetLoan] = useState<Loan | null>(null);
   const [targetBorrower, setTargetBorrower] = useState<Borrower | null>(null);
   const [targetInst, setTargetInst] = useState<Installment | null>(null);
@@ -89,6 +97,7 @@ export default function SocioPage() {
     method: string;
     date: string;
     remaining: number;
+    collectorName: string;
   } | null>(null);
 
   // Formulario nuevo cliente
@@ -243,46 +252,12 @@ export default function SocioPage() {
           return;
         }
 
-        // Marcar el token como quemado/usado por este dispositivo de forma autoritativa
-        const updatedTokens = tokens.map((t) =>
-          t.token === found.token
-            ? { ...t, used: true, usedAt: now, usedByDevice: deviceId }
-            : t,
-        );
-
-        const tenantUpdate: Partial<Tenant> = {
-          singleUseSocioTokens: updatedTokens,
-          lastSeenOnlineAt: now,
-          updatedAt: now,
-        };
-
-        await db.tenants.update(tenantData.tenantId, tenantUpdate);
-
-        // Subir a Firestore
-        const cfg = loadFirebaseConfig();
-        if (cfg && navigator.onLine) {
-          const { initializeApp, getApps } = await import('firebase/app');
-          const { getFirestore, doc, setDoc } = await import('firebase/firestore');
-          const fs = getFirestore(getApps()[0] ?? initializeApp(cfg));
-          await setDoc(doc(fs, 'tenants', tenantData.tenantId), deepSanitize(tenantUpdate), { merge: true });
-        }
-
-        const sess: SocioStoredSession = {
-          tenantId: tenantData.tenantId,
-          tenantName: tenantData.name,
-          socioName: found.socioName || 'Cobrador de Campo',
-          tokenId: found.id || found.token,
-          deviceId,
-        };
-
-        localStorage.setItem(SOCIO_SESSION_STORAGE, JSON.stringify(sess));
-
+        // Si el token es válido y no está usado, solicitamos el nombre del socio
         if (!cancelled) {
-          setActiveSession(sess);
-          setTokenStatus('ready');
-          toast(`¡Enlace vinculado con éxito! Bienvenido(a), ${sess.socioName}.`, 'success');
-          // Limpiar el token de la barra de direcciones para que no quede expuesto
-          window.history.replaceState({}, '', window.location.pathname);
+          setPendingRedeemTenant(tenantData);
+          setPendingToken(found);
+          setSocioNameInput(found.socioName || '');
+          setTokenStatus('needs_name');
         }
       } catch (err) {
         if (!cancelled) {
@@ -297,6 +272,74 @@ export default function SocioPage() {
       cancelled = true;
     };
   }, [urlToken, urlTenantId]);
+
+  async function handleConfirmSocioIdentity(e: FormEvent) {
+    e.preventDefault();
+    const finalName = socioNameInput.trim();
+    if (!finalName) {
+      toast('Por favor escribe tu nombre completo.', 'error');
+      return;
+    }
+    if (!pendingRedeemTenant || !pendingToken) {
+      toast('No hay datos de vinculación pendientes.', 'error');
+      return;
+    }
+
+    const deviceId = getOrCreateDeviceId();
+    const now = nowISO();
+
+    try {
+      const tokens: SingleUseSocioToken[] = pendingRedeemTenant.singleUseSocioTokens ?? [];
+      const updatedTokens = tokens.map((t) =>
+        t.token === pendingToken.token
+          ? { ...t, used: true, usedAt: now, usedByDevice: deviceId, socioName: finalName }
+          : t,
+      );
+
+      const tenantUpdate: Partial<Tenant> = {
+        singleUseSocioTokens: updatedTokens,
+        lastSeenOnlineAt: now,
+        updatedAt: now,
+      };
+
+      await db.tenants.update(pendingRedeemTenant.tenantId, tenantUpdate);
+
+      // Subir a Firestore
+      const cfg = loadFirebaseConfig();
+      if (cfg && navigator.onLine) {
+        const { initializeApp, getApps } = await import('firebase/app');
+        const { getFirestore, doc, setDoc } = await import('firebase/firestore');
+        const fs = getFirestore(getApps()[0] ?? initializeApp(cfg));
+        await setDoc(doc(fs, 'tenants', pendingRedeemTenant.tenantId), deepSanitize(tenantUpdate), { merge: true });
+      }
+
+      const sess: SocioStoredSession = {
+        tenantId: pendingRedeemTenant.tenantId,
+        tenantName: pendingRedeemTenant.name,
+        socioName: finalName,
+        tokenId: pendingToken.id || pendingToken.token,
+        deviceId,
+      };
+
+      localStorage.setItem(SOCIO_SESSION_STORAGE, JSON.stringify(sess));
+      setActiveSession(sess);
+      setTokenStatus('ready');
+      toast(`¡Dispositivo vinculado con éxito! Bienvenido(a), ${finalName}.`, 'success');
+      window.history.replaceState({}, '', window.location.pathname);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Error al registrar tu identificación.', 'error');
+    }
+  }
+
+  function handleUpdateSocioName(newName: string) {
+    const finalName = newName.trim();
+    if (!finalName || !activeSession) return;
+    const updated: SocioStoredSession = { ...activeSession, socioName: finalName };
+    localStorage.setItem(SOCIO_SESSION_STORAGE, JSON.stringify(updated));
+    setActiveSession(updated);
+    setEditNameModalOpen(false);
+    toast(`Nombre actualizado a: ${finalName}`, 'success');
+  }
 
   // Si no hay token de enlace pero el usuario está logueado como SOCIO en auth
   useEffect(() => {
@@ -337,10 +380,14 @@ export default function SocioPage() {
     toast('Sesión de socio cerrada en este equipo.', 'info');
   }
 
-  // Filtrado de cuotas pendientes para la ruta del cobrador
+  // Filtrado de cuotas pendientes para la ruta del cobrador (ordenado estrictamente por fecha de cobro)
   const pendingRouteInstallments = useMemo(() => {
     const list = (installments ?? []).filter((i) => i.status !== 'PAID');
-    list.sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+    list.sort((a, b) => {
+      const dateDiff = a.dueDate.localeCompare(b.dueDate);
+      if (dateDiff !== 0) return dateDiff;
+      return a.installmentNumber - b.installmentNumber;
+    });
 
     if (!searchQuery.trim()) return list;
     const q = searchQuery.toLowerCase().trim();
@@ -381,7 +428,7 @@ export default function SocioPage() {
     return { dueTodayOrOverdueCount, dueTodayOrOverdueAmount, totalCollectedToday };
   }, [installments, today]);
 
-  function openCollectModal(inst: Installment) {
+  function openCollectModal(inst: Installment, mode: 'FULL' | 'ABONO' | 'OFF_DATE' = 'FULL') {
     const loan = loanMap.get(inst.loanId);
     const borrower = loan ? borrowerMap.get(loan.borrowerId) : undefined;
     if (!loan || !borrower) {
@@ -392,9 +439,18 @@ export default function SocioPage() {
     setTargetLoan(loan);
     setTargetBorrower(borrower);
     const remaining = Math.max(0, inst.baseAmountDue + inst.lateFeeCharged - inst.amountPaid);
-    setPaymentAmount(String(remaining));
+    setCollectMode(mode);
+    if (mode === 'FULL') {
+      setPaymentAmount(String(remaining));
+      setPaymentNotes(`Pago total cuota ${inst.installmentNumber}`);
+    } else if (mode === 'ABONO') {
+      setPaymentAmount('');
+      setPaymentNotes(`Abono a cuota ${inst.installmentNumber}`);
+    } else {
+      setPaymentAmount('');
+      setPaymentNotes(`Abono fuera de fecha cuota ${inst.installmentNumber} (vence ${formatDateShort(inst.dueDate)})`);
+    }
     setPaymentMethod('EFECTIVO');
-    setPaymentNotes('');
     setCollectModalOpen(true);
   }
 
@@ -423,6 +479,7 @@ export default function SocioPage() {
           metodoPago: paymentMethod,
           notas: paymentNotes.trim(),
           recaudadoPor: socioActor.name,
+          modalidad: collectMode,
         },
       );
 
@@ -438,6 +495,7 @@ export default function SocioPage() {
         method: paymentMethod,
         date: formatDateShort(today),
         remaining: remainingAfter,
+        collectorName: socioActor.name,
       };
 
       setLastReceipt(receipt);
@@ -535,6 +593,49 @@ export default function SocioPage() {
   }
 
   // Render según estado del token o sesión
+  if (tokenStatus === 'needs_name' && pendingRedeemTenant && pendingToken) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-slate-950 p-4 text-center">
+        <div className="max-w-md w-full rounded-2xl bg-slate-900 p-6 border border-emerald-500/30 shadow-2xl space-y-4">
+          <div className="h-14 w-14 rounded-2xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center mx-auto ring-4 ring-emerald-500/10">
+            <UserCheck size={28} />
+          </div>
+          <div>
+            <span className="inline-block rounded-full bg-emerald-500/10 px-3 py-1 text-[11px] font-bold text-emerald-400 uppercase tracking-wide">
+              Vinculación de Dispositivo
+            </span>
+            <h2 className="mt-2 text-lg font-bold text-white">Identificación de Socio Cobrador</h2>
+            <p className="text-xs text-slate-400 mt-1">
+              Organización: <strong className="text-white">{pendingRedeemTenant.name}</strong>
+            </p>
+          </div>
+          <p className="text-xs text-slate-300 leading-relaxed bg-slate-800/80 p-3 rounded-xl border border-slate-700/60 text-left">
+            Ingresa tu <strong>Nombre y Apellido</strong>. Cada cobro, abono y recibo registrará tu identidad para mantener un control claro y transparente en el equipo de cobranzas.
+          </p>
+          <form onSubmit={handleConfirmSocioIdentity} className="space-y-3.5 pt-1 text-left">
+            <div>
+              <Label className="text-slate-300 text-xs font-semibold">Tu Nombre Completo *</Label>
+              <Input
+                value={socioNameInput}
+                onChange={(e) => setSocioNameInput(e.target.value)}
+                placeholder="Ej. Carlos Mendoza"
+                className="mt-1 bg-slate-800 border-slate-700 text-white placeholder-slate-500 font-semibold"
+                autoFocus
+                required
+              />
+            </div>
+            <Button
+              type="submit"
+              className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-2.5 cursor-pointer shadow-lg shadow-emerald-500/20"
+            >
+              Comenzar Ruta de Cobro
+            </Button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   if (tokenStatus === 'validating') {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center bg-slate-900 p-4 text-center">
@@ -637,9 +738,22 @@ export default function SocioPage() {
             <p className="truncate text-xs font-bold text-white leading-tight">
               {activeSession.tenantName}
             </p>
-            <p className="truncate text-[10px] text-emerald-400 font-medium">
-              Socio: {activeSession.socioName}
-            </p>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <p className="truncate text-[10px] text-emerald-400 font-medium">
+                Socio: {activeSession.socioName}
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setEditNameInput(activeSession.socioName);
+                  setEditNameModalOpen(true);
+                }}
+                className="text-[10px] text-slate-400 hover:text-emerald-300 underline cursor-pointer"
+                title="Editar o corregir nombre del cobrador"
+              >
+                (Cambiar)
+              </button>
+            </div>
           </div>
         </div>
 
@@ -837,13 +951,38 @@ export default function SocioPage() {
                         </div>
                       )}
 
-                      {/* Botón de cobro */}
-                      <button
-                        onClick={() => openCollectModal(inst)}
-                        className="mt-3 w-full cursor-pointer rounded-xl bg-emerald-500 hover:bg-emerald-400 py-2 text-center text-xs font-bold text-slate-950 shadow-md shadow-emerald-500/20 transition-colors flex items-center justify-center gap-1.5"
-                      >
-                        <HandCoins size={14} /> Registrar Cobro / Abono
-                      </button>
+                      {/* Botones de cobro contextuales según fecha de exigibilidad */}
+                      {isToday || isOverdue ? (
+                        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => openCollectModal(inst, 'FULL')}
+                            className="cursor-pointer rounded-xl bg-emerald-500 hover:bg-emerald-400 py-2.5 px-2 text-center text-xs font-bold text-slate-950 shadow-md shadow-emerald-500/20 transition-colors flex items-center justify-center gap-1.5"
+                          >
+                            <CheckCircle2 size={14} /> Cobrar Cuota ({formatCOP(remaining)})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openCollectModal(inst, 'ABONO')}
+                            className="cursor-pointer rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 py-2.5 px-2 text-center text-xs font-bold text-emerald-400 transition-colors flex items-center justify-center gap-1.5"
+                          >
+                            <HandCoins size={14} /> Abonar a Cuota
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl bg-slate-950/60 p-2.5 border border-slate-800/80">
+                          <div className="min-w-0 text-[11px] text-slate-400">
+                            <span>📅 Cobro programado para el <strong>{formatDateShort(inst.dueDate)}</strong></span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => openCollectModal(inst, 'OFF_DATE')}
+                            className="shrink-0 cursor-pointer rounded-xl border border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 py-1.5 px-3 text-center text-xs font-bold text-amber-400 transition-colors flex items-center justify-center gap-1.5 self-end sm:self-auto"
+                          >
+                            <HandCoins size={13} /> Abonar Fuera de Fecha
+                          </button>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -1028,13 +1167,34 @@ export default function SocioPage() {
       <Dialog
         open={collectModalOpen}
         onClose={() => setCollectModalOpen(false)}
-        title="Registrar Cobro en Ruta"
+        title={
+          collectMode === 'FULL'
+            ? 'Cobrar Cuota Completa'
+            : collectMode === 'OFF_DATE'
+            ? 'Registrar Abono Fuera de Fecha'
+            : 'Registrar Abono Parcial'
+        }
       >
         {targetBorrower && targetInst && (
           <form onSubmit={handleConfirmCollect} className="space-y-3.5 text-xs">
             <div className="rounded-xl bg-slate-100 p-3 border border-slate-200">
-              <p className="font-bold text-slate-800 text-sm">{targetBorrower.fullName}</p>
-              <p className="text-[11px] text-slate-500">
+              <div className="flex items-center justify-between gap-2">
+                <p className="font-bold text-slate-800 text-sm">{targetBorrower.fullName}</p>
+                {collectMode === 'OFF_DATE' ? (
+                  <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">
+                    Fuera de fecha
+                  </span>
+                ) : collectMode === 'FULL' ? (
+                  <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
+                    Cuota completa
+                  </span>
+                ) : (
+                  <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-bold text-sky-800">
+                    Abono parcial
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-slate-500 mt-0.5">
                 Cuota {targetInst.installmentNumber} • Vence {formatDateShort(targetInst.dueDate)}
               </p>
             </div>
@@ -1146,6 +1306,10 @@ export default function SocioPage() {
                 <span className="text-slate-600">Saldo Restante Préstamo:</span>
                 <span className="font-bold text-slate-800">{formatCOP(lastReceipt.remaining)}</span>
               </div>
+              <div className="flex justify-between border-t pt-1 text-slate-600">
+                <span>Cobrado por:</span>
+                <span className="font-semibold text-slate-900">{lastReceipt.collectorName}</span>
+              </div>
             </div>
 
             <div className="space-y-2">
@@ -1165,6 +1329,38 @@ export default function SocioPage() {
             </div>
           </div>
         )}
+      </Dialog>
+
+      {/* DIÁLOGO: EDITAR NOMBRE DEL COBRADOR */}
+      <Dialog
+        open={editNameModalOpen}
+        onClose={() => setEditNameModalOpen(false)}
+        title="Identificación del Cobrador"
+        description="Actualiza el nombre que aparecerá en los comprobantes y en los registros de auditoría de cobranza."
+      >
+        <div className="space-y-3.5 pt-1">
+          <div>
+            <Label className="text-xs font-semibold text-slate-700">Nombre Completo *</Label>
+            <Input
+              value={editNameInput}
+              onChange={(e) => setEditNameInput(e.target.value)}
+              placeholder="Ej. Carlos Mendoza"
+              className="mt-1"
+              autoFocus
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={() => setEditNameModalOpen(false)}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={() => handleUpdateSocioName(editNameInput)}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold"
+            >
+              Guardar Nombre
+            </Button>
+          </div>
+        </div>
       </Dialog>
     </div>
   );

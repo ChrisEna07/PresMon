@@ -92,6 +92,27 @@ function pushToCloud(): void {
   });
 }
 
+function formatDeviceSummary(deviceStr: string): string {
+  if (!deviceStr) return 'Dispositivo conectado';
+  const ua = deviceStr.toLowerCase();
+  let browser = 'Navegador Web';
+  if (ua.includes('firefox')) browser = 'Mozilla Firefox';
+  else if (ua.includes('edg')) browser = 'Microsoft Edge';
+  else if (ua.includes('chrome')) browser = 'Google Chrome';
+  else if (ua.includes('safari')) browser = 'Apple Safari';
+
+  let os = '';
+  if (ua.includes('windows nt 10.0')) os = 'Windows 10/11';
+  else if (ua.includes('windows')) os = 'Windows PC';
+  else if (ua.includes('android')) os = 'Android Móvil';
+  else if (ua.includes('iphone') || ua.includes('ipad')) os = 'iOS (Apple)';
+  else if (ua.includes('macintosh') || ua.includes('mac os')) os = 'macOS';
+  else if (ua.includes('linux')) os = 'Linux';
+
+  if (os) return `${browser} en ${os}`;
+  return deviceStr.length > 40 ? `${deviceStr.slice(0, 37)}…` : deviceStr;
+}
+
 export default function SuperAdminPage() {
   const { session } = useAuth();
   const { toast } = useToast();
@@ -195,6 +216,26 @@ export default function SuperAdminPage() {
   const [noticeText, setNoticeText] = useState('');
   const [noticeLevel, setNoticeLevel] = useState<NoticeLevel>('info');
   const [noticeAction, setNoticeAction] = useState<'send' | 'clear'>('send');
+
+  // Filtro de Organizaciones: Todas / En Línea / Offline
+  const [orgFilterMode, setOrgFilterMode] = useState<'ALL' | 'ONLINE' | 'OFFLINE'>('ALL');
+
+  const onlineTenantsCount = useMemo(
+    () => (tenants ?? []).filter((t) => !t.offlineLicense).length,
+    [tenants],
+  );
+  const offlineTenantsCount = useMemo(
+    () => (tenants ?? []).filter((t) => Boolean(t.offlineLicense)).length,
+    [tenants],
+  );
+
+  const filteredTenants = useMemo(() => {
+    return (tenants ?? []).filter((t) => {
+      if (orgFilterMode === 'ONLINE') return !t.offlineLicense;
+      if (orgFilterMode === 'OFFLINE') return Boolean(t.offlineLicense);
+      return true;
+    });
+  }, [tenants, orgFilterMode]);
 
   const [searchParams, setSearchParams] = useSearchParams();
   const urlTab = searchParams.get('tab');
@@ -320,6 +361,9 @@ export default function SuperAdminPage() {
     let totalPlanOverdue = 0;
     let tenantsInMoraCount = 0;
     let totalCloudRecurringMonthly = 0;
+    let contadoTenantsCount = 0;
+    let contadoTotalAmount = 0;
+    let financedTenantsCount = 0;
 
     activeTenantsList.forEach((t) => {
       const plan = planByTenant.get(t.tenantId);
@@ -332,8 +376,14 @@ export default function SuperAdminPage() {
         totalCloudRecurringMonthly += Number(plan.cloudMonthlyFee) || 0;
       }
 
-      if (plan.appPaymentMode === 'FULL') {
-        totalPlanContracted += Number(plan.appTotalAmount) || 0;
+      if (plan.appPaymentMode === 'FULL' || Boolean(t.offlineLicense)) {
+        const fullVal = Number(plan.appTotalAmount) || (t.offlineLicense ? 150000 : 0);
+        totalPlanContracted += fullVal;
+        totalPlanCollected += fullVal;
+        contadoTenantsCount++;
+        contadoTotalAmount += fullVal;
+      } else {
+        financedTenantsCount++;
       }
       (plan.installments ?? []).forEach((inst) => {
         if (inst.status === 'CANCELLED') return;
@@ -401,7 +451,7 @@ export default function SuperAdminPage() {
         const plan = planByTenant.get(t.tenantId);
         const invoice = plan ? computeMonthlyInvoice(plan) : null;
         let pendingApp = 0;
-        if (plan) {
+        if (plan && plan.appPaymentMode !== 'FULL' && !t.offlineLicense) {
           (plan.installments ?? []).forEach((i) => {
             if (i.status === 'PENDING') {
               pendingApp += Math.max(0, (Number(i.amount) || 0) - (Number(i.paidAmount) || 0));
@@ -409,7 +459,7 @@ export default function SuperAdminPage() {
           });
         }
         // cloudDue es la porción de servicios cloud exigibles en la factura
-        const cloudDue = invoice ? Math.max(0, invoice.totalInvoiceAmount - invoice.installmentsAmount) : 0;
+        const cloudDue = (invoice && !t.offlineLicense) ? Math.max(0, invoice.totalInvoiceAmount - invoice.installmentsAmount) : 0;
         const totalDue = pendingApp + cloudDue;
 
         return {
@@ -431,6 +481,9 @@ export default function SuperAdminPage() {
       totalPlanOverdue,
       totalCloudRecurringMonthly,
       tenantsInMoraCount,
+      contadoTenantsCount,
+      contadoTotalAmount,
+      financedTenantsCount,
       totalLoansPrincipal,
       totalLoansPaid,
       totalLoansPending,
@@ -1895,7 +1948,10 @@ export default function SuperAdminPage() {
                 <p className="mt-1 text-lg sm:text-xl font-black text-emerald-900">
                   {formatCOP(globalMetrics.totalPlanCollected)}
                 </p>
-                <p className="text-[10px] text-emerald-700 font-medium mt-0.5">Pagos y abonos recibidos</p>
+                <div className="mt-1 flex flex-col gap-0.5 text-[10px] text-emerald-800">
+                  <span>Contado: <strong>{formatCOP(globalMetrics.contadoTotalAmount)}</strong> ({globalMetrics.contadoTenantsCount} orgs)</span>
+                  <span>Financiado: <strong>{formatCOP(Math.max(0, globalMetrics.totalPlanCollected - globalMetrics.contadoTotalAmount))}</strong></span>
+                </div>
               </div>
 
               <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-3.5 shadow-2xs">
@@ -2095,7 +2151,53 @@ export default function SuperAdminPage() {
             <StatCard label="Administradores" value={String(stats.admins)} icon={KeyRound} tone="amber" />
           </div>
 
-      <h2 className="mt-6 mb-2 font-semibold text-slate-700">Tenants registrados</h2>
+      <div className="mt-6 mb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h2 className="font-bold text-slate-800 text-base">Organizaciones Registradas</h2>
+          <p className="text-xs text-slate-500">
+            Control de tenants, licencias en línea (Cloud) y edición offline 100% local.
+          </p>
+        </div>
+        <div className="inline-flex rounded-xl bg-slate-100 p-1 border border-slate-200 self-start sm:self-auto">
+          <button
+            type="button"
+            onClick={() => setOrgFilterMode('ALL')}
+            className={cn(
+              'px-3 py-1.5 text-xs font-bold rounded-lg transition-colors cursor-pointer',
+              orgFilterMode === 'ALL'
+                ? 'bg-white text-slate-900 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900',
+            )}
+          >
+            Todas ({tenants?.length ?? 0})
+          </button>
+          <button
+            type="button"
+            onClick={() => setOrgFilterMode('ONLINE')}
+            className={cn(
+              'px-3 py-1.5 text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-1.5',
+              orgFilterMode === 'ONLINE'
+                ? 'bg-sky-600 text-white shadow-xs'
+                : 'text-slate-600 hover:text-sky-700',
+            )}
+          >
+            ☁️ En Línea ({onlineTenantsCount})
+          </button>
+          <button
+            type="button"
+            onClick={() => setOrgFilterMode('OFFLINE')}
+            className={cn(
+              'px-3 py-1.5 text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-1.5',
+              orgFilterMode === 'OFFLINE'
+                ? 'bg-amber-600 text-white shadow-xs'
+                : 'text-slate-600 hover:text-amber-800',
+            )}
+          >
+            💾 Offline ({offlineTenantsCount})
+          </button>
+        </div>
+      </div>
+
       <TableWrap>
         <THead>
           <TH>Organización</TH>
@@ -2110,18 +2212,40 @@ export default function SuperAdminPage() {
           <TH className="text-right">Acciones</TH>
         </THead>
         <TBody>
-          {(tenants ?? []).map((t) => {
-            const plan = planByTenant.get(t.tenantId);
-            const invoice = plan ? computeMonthlyInvoice(plan) : null;
-            const hasMora5Days = invoice?.isOverdueMoreThan5Days ?? false;
-            const hasCobroInsistente = t.paymentBannerDeactivated !== true && (invoice?.totalInvoiceAmount ?? 0) > 0;
-            const isLockedByDebt = t.appLocked || (hasMora5Days && (!t.unlockedByAdmin || hasCobroInsistente)) || (hasCobroInsistente && !t.paymentBannerDismissible);
-            return (
-              <TR key={t.tenantId} className={isLockedByDebt ? 'bg-red-50/60' : undefined}>
-                <TD className="font-medium text-slate-800">
-                  <div className="flex flex-col gap-0.5">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span>{t.name}</span>
+          {filteredTenants.length === 0 ? (
+            <TR>
+              <TD colSpan={10} className="text-center py-8 text-xs text-slate-500">
+                No se encontraron organizaciones en la categoría seleccionada ({orgFilterMode}).
+              </TD>
+            </TR>
+          ) : (
+            filteredTenants.map((t) => {
+              const plan = planByTenant.get(t.tenantId);
+              const invoice = plan ? computeMonthlyInvoice(plan) : null;
+              const hasMora5Days = invoice?.isOverdueMoreThan5Days ?? false;
+              const hasCobroInsistente = t.paymentBannerDeactivated !== true && (invoice?.totalInvoiceAmount ?? 0) > 0;
+              const isLockedByDebt = t.appLocked || (hasMora5Days && (!t.unlockedByAdmin || hasCobroInsistente)) || (hasCobroInsistente && !t.paymentBannerDismissible);
+              const isOfflineOrg = Boolean(t.offlineLicense);
+              const isContadoOrg = plan?.appPaymentMode === 'FULL';
+              return (
+                <TR key={t.tenantId} className={isLockedByDebt ? 'bg-red-50/60' : undefined}>
+                  <TD className="font-medium text-slate-800">
+                    <div className="flex flex-col gap-0.5">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span>{t.name}</span>
+                        {isOfflineOrg ? (
+                          <Badge variant="outline" className="bg-amber-100 text-amber-900 border-amber-300 font-extrabold text-[9px]">
+                            💾 OFFLINE (PAGO 100%)
+                          </Badge>
+                        ) : isContadoOrg ? (
+                          <Badge variant="success" className="text-[9px] font-bold">
+                            CONTADO (100% PAGADO)
+                          </Badge>
+                        ) : (
+                          <Badge variant="info" className="bg-sky-50 text-sky-700 border-sky-200 text-[9px] font-bold">
+                            ☁️ EN LÍNEA
+                          </Badge>
+                        )}
                       {t.appLocked && (
                         <span className="inline-flex items-center gap-1">
                           <Lock size={12} className="text-red-500" />
@@ -2330,7 +2454,7 @@ export default function SuperAdminPage() {
                 </TD>
               </TR>
             );
-          })}
+          }))}
         </TBody>
       </TableWrap>
 
@@ -4160,79 +4284,97 @@ service cloud.firestore {
 
                   if (adminManageTarget.currentSessionId) {
                     return (
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-white rounded-lg border border-emerald-200">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                            <p className="text-xs font-bold text-slate-900">{activeDevice}</p>
-                            <Badge variant="success" className="text-[10px] py-0 px-1.5 font-bold">Sesión Activa</Badge>
+                      <div className="flex flex-col gap-3 p-3.5 bg-white rounded-xl border border-emerald-200 shadow-2xs">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap mb-1">
+                            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                            <p className="text-xs font-bold text-slate-900">
+                              {formatDeviceSummary(activeDevice)}
+                            </p>
+                            <Badge variant="success" className="text-[10px] py-0 px-1.5 font-bold">
+                              Sesión Activa
+                            </Badge>
                           </div>
-                          <p className="text-[11px] text-slate-500 mt-0.5">
+                          <p className="text-[10px] text-slate-500 font-mono break-all bg-slate-50 p-2 rounded-lg border border-slate-100 my-1 leading-relaxed">
+                            {activeDevice}
+                          </p>
+                          <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
                             Iniciada: {adminManageTarget.sessionStartedAt ? formatDateTime(adminManageTarget.sessionStartedAt) : 'Sesión en curso'} · {onlineInfo.tooltip}
                           </p>
                         </div>
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          className="gap-1.5 shrink-0 cursor-pointer"
-                          onClick={() => void handleDisconnectSession(adminManageTarget)}
-                        >
-                          <LogOut size={13} /> Forzar Desconexión Remota
-                        </Button>
+                        <div className="flex justify-end pt-2 border-t border-slate-100">
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            className="gap-1.5 cursor-pointer w-full sm:w-auto"
+                            onClick={() => void handleDisconnectSession(adminManageTarget)}
+                          >
+                            <LogOut size={13} /> Forzar Desconexión Remota
+                          </Button>
+                        </div>
                       </div>
                     );
                   }
 
                   if (onlineInfo.isLive) {
                     return (
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-white rounded-lg border border-emerald-200">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                            <p className="text-xs font-bold text-slate-900">{activeDevice}</p>
+                      <div className="flex flex-col gap-3 p-3.5 bg-white rounded-xl border border-emerald-200 shadow-2xs">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap mb-1">
+                            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                            <p className="text-xs font-bold text-slate-900">
+                              {formatDeviceSummary(activeDevice)}
+                            </p>
                             <Badge variant={onlineInfo.badgeVariant} className="text-[10px] py-0 px-1.5 font-bold">
                               {onlineInfo.text}
                             </Badge>
                           </div>
-                          <p className="text-[11px] text-slate-500 mt-0.5">
+                          <p className="text-[10px] text-slate-500 font-mono break-all bg-slate-50 p-2 rounded-lg border border-slate-100 my-1 leading-relaxed">
+                            {activeDevice}
+                          </p>
+                          <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
                             {onlineInfo.tooltip}
                           </p>
                         </div>
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          className="gap-1.5 shrink-0 cursor-pointer"
-                          onClick={() => void handleDisconnectSession(adminManageTarget)}
-                        >
-                          <LogOut size={13} /> Forzar Desconexión Remota
-                        </Button>
+                        <div className="flex justify-end pt-2 border-t border-slate-100">
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            className="gap-1.5 cursor-pointer w-full sm:w-auto"
+                            onClick={() => void handleDisconnectSession(adminManageTarget)}
+                          >
+                            <LogOut size={13} /> Forzar Desconexión Remota
+                          </Button>
+                        </div>
                       </div>
                     );
                   }
 
                   return (
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-white rounded-lg border border-slate-200 text-xs text-slate-600">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="h-2 w-2 rounded-full bg-slate-300" />
-                          <p className="font-semibold text-slate-700">Equipo actualmente desconectado</p>
+                    <div className="flex flex-col gap-3 p-3.5 bg-white rounded-xl border border-slate-200 text-xs text-slate-600 shadow-2xs">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap mb-1">
+                          <span className="h-2 w-2 rounded-full bg-slate-300 shrink-0" />
+                          <p className="font-bold text-slate-800">Equipo actualmente desconectado</p>
                           <Badge variant="muted" className="text-[10px] py-0 px-1.5">Off-line</Badge>
                         </div>
-                        <p className="text-[11px] text-slate-500 mt-0.5">
+                        <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
                           {onlineInfo.text !== 'Sin registro'
                             ? `Última actividad: ${onlineInfo.text} · ${onlineInfo.tooltip}`
                             : 'Esta organización no ha registrado conexiones online.'}
                         </p>
                       </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="gap-1.5 shrink-0 text-slate-600 hover:text-slate-900 cursor-pointer"
-                        onClick={() => void handleDisconnectSession(adminManageTarget)}
-                        title="Genera un nuevo identificador de sesión para invalidar cualquier sesión anterior si el equipo intenta reconectar"
-                      >
-                        <ShieldCheck size={13} /> Invalidar Tokens Previos
-                      </Button>
+                      <div className="flex justify-end pt-2 border-t border-slate-100">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="gap-1.5 text-slate-600 hover:text-slate-900 cursor-pointer w-full sm:w-auto"
+                          onClick={() => void handleDisconnectSession(adminManageTarget)}
+                          title="Genera un nuevo identificador de sesión para invalidar cualquier sesión anterior si el equipo intenta reconectar"
+                        >
+                          <ShieldCheck size={13} /> Invalidar Tokens Previos
+                        </Button>
+                      </div>
                     </div>
                   );
                 })()}

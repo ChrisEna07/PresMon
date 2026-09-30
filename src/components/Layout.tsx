@@ -42,6 +42,7 @@ import { db, wipeLocalTenantData } from '../db/db';
 import type { BankAccountInfo, PaymentReport, ServicePlan, Tenant } from '../db/models';
 import { loadFirebaseConfig } from '../lib/sync/firebaseConfig';
 import { useAuth } from '../store/auth';
+import { isOfflineEdition } from '../lib/offlineEdition';
 import { useOnline } from '../hooks/useOnline';
 import {
   ensureSuperAdminSynced,
@@ -745,8 +746,8 @@ export default function Layout() {
       navItems.push({ to: '/socio', label: 'Módulo Socio', icon: Smartphone });
     }
 
-    // Módulo de Configuración / Ajustes (Beneficio configurable por Super Admin)
-    if (tenantRecord?.settingsModuleEnabled !== false) {
+    // Módulo de Configuración / Ajustes (Siempre activo en Offline, o configurable por Super Admin en Cloud)
+    if (isOfflineEdition() || tenantRecord?.settingsModuleEnabled !== false) {
       navItems.push({ to: '/settings', label: 'Ajustes', icon: Settings });
     }
   }
@@ -1632,7 +1633,7 @@ export default function Layout() {
               </div>
             </div>
           )}
-          {appLocked ? null : session?.role !== 'SUPER_ADMIN' && tenantRecord?.settingsModuleEnabled === false && location.pathname === '/settings' ? (
+          {appLocked ? null : session?.role !== 'SUPER_ADMIN' && !isOfflineEdition() && tenantRecord?.settingsModuleEnabled === false && location.pathname === '/settings' ? (
             <div className="mx-auto max-w-lg rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm my-12">
               <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-100 text-amber-600 mb-4">
                 <Settings size={28} />
