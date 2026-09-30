@@ -19,6 +19,7 @@ import {
   HandCoins,
   Landmark,
   LayoutDashboard,
+  Loader2,
   Lock,
   LogOut,
   Megaphone,
@@ -55,6 +56,7 @@ import {
   openWhatsAppDev,
   CHRIZDEV_WHATSAPP_DISPLAY,
   CHRIZDEV_WHATSAPP_PHONE,
+  DEFAULT_OFFICIAL_BANK_ACCOUNTS,
 } from '../lib/share';
 import { computeMonthlyInvoice } from '../lib/billingEngine';
 import {
@@ -153,6 +155,27 @@ export default function Layout() {
   const [reportImageName, setReportImageName] = useState('');
   const [submittingReport, setSubmittingReport] = useState(false);
 
+  // Cuentas bancarias configuradas a nivel de plataforma o tenant
+  const [platformBankAccounts, setPlatformBankAccounts] = useState<BankAccountInfo[]>([]);
+  const customBanks = (tenantRecord?.bankAccounts || []).filter((b) => b.active);
+  const displayedBankAccounts: BankAccountInfo[] =
+    customBanks.length > 0
+      ? customBanks
+      : platformBankAccounts.length > 0
+      ? platformBankAccounts
+      : DEFAULT_OFFICIAL_BANK_ACCOUNTS;
+
+  // Persistencia síncrona en localStorage para bloqueo total inmediato ante recargas (F5)
+  const lockStorageKey = session?.tenantId ? `presmon_tenant_locked_${session.tenantId}` : null;
+  const [isCachedLocked, setIsCachedLocked] = useState<boolean>(() => {
+    if (!lockStorageKey) return false;
+    try {
+      return localStorage.getItem(lockStorageKey) === 'true';
+    } catch {
+      return false;
+    }
+  });
+
   // Comprobante pendiente de aprobación en vivo
   const pendingPaymentReport = useLiveQuery<PaymentReport | undefined>(
     async () => {
@@ -189,6 +212,14 @@ export default function Layout() {
   const abonoDaysRemaining = activeAbono ? diffDays(todayStr(), activeAbono.graceUntil) : 0;
   const isAbonoGraceExpired = isAbonoActive && abonoDaysRemaining < 0;
 
+  // Monto de deuda exigible: factura mensual, o costo de mensualidad cloud, o saldo de abono
+  const effectiveDebtAmount =
+    monthlyInvoice.totalInvoiceAmount > 0
+      ? monthlyInvoice.totalInvoiceAmount
+      : typeof currentPlan?.cloudMonthlyFee === 'number' && currentPlan.cloudMonthlyFee > 0
+      ? currentPlan.cloudMonthlyFee
+      : (activeAbono?.remainingAmount ?? 0);
+
   // Persistencia de tiempo y cierre (X) configurado por Super Admin para el cobro
   const isPaymentBannerExpired =
     !!tenantRecord?.paymentBannerExpiresAt &&
@@ -198,7 +229,7 @@ export default function Layout() {
   // Cobro Insistente: activo para organizaciones con deuda exigible mientras no esté desactivado expresamente
   const isCobroInsistenteActive =
     session?.role === 'TENANT_ADMIN' &&
-    hasUnpaidInvoice &&
+    (hasUnpaidInvoice || effectiveDebtAmount > 0) &&
     tenantRecord?.paymentBannerDeactivated !== true &&
     !isPaymentBannerExpired &&
     !isAbonoActive;
@@ -216,12 +247,37 @@ export default function Layout() {
     (isOverdueMoreThan5Days || (hasMoraDays && isCobroInsistenteActive)) &&
     (!unlockedByAdmin || isCobroInsistenteActive);
 
-  const appLocked =
+  const realAppLocked =
     session?.role === 'TENANT_ADMIN' &&
     (tenantRecord?.appLocked === true ||
       isLockedByCobroInsistente ||
       isAutoLockedForMora ||
       (isAbonoGraceExpired && (!unlockedByAdmin || isCobroInsistenteActive)));
+
+  // Bloqueo total: inmediato si estaba en caché local de bloqueo, o si se calcula bloqueado
+  const appLocked =
+    session?.role === 'TENANT_ADMIN' &&
+    (isCachedLocked || realAppLocked);
+
+  // Mantener sincronizado el bloqueo en almacenamiento local para inmunidad ante F5
+  useEffect(() => {
+    if (!lockStorageKey) return;
+    if (realAppLocked) {
+      try {
+        localStorage.setItem(lockStorageKey, 'true');
+      } catch {
+        /* noop */
+      }
+      setIsCachedLocked(true);
+    } else if (tenantRecord) {
+      try {
+        localStorage.removeItem(lockStorageKey);
+      } catch {
+        /* noop */
+      }
+      setIsCachedLocked(false);
+    }
+  }, [lockStorageKey, realAppLocked, tenantRecord]);
 
   const showMonthlyInvoiceBanner =
     session?.role === 'TENANT_ADMIN' &&
@@ -255,14 +311,11 @@ export default function Layout() {
     const defaultAmount =
       typeof customAmount === 'number'
         ? customAmount
-        : (tenantRecord?.activeAbono?.active && tenantRecord.activeAbono.remainingAmount > 0
-          ? tenantRecord.activeAbono.remainingAmount
-          : monthlyInvoice.totalInvoiceAmount);
+        : effectiveDebtAmount;
     setReportAmount(defaultAmount);
     setReportDate(todayStr());
-    const activeBanks = (tenantRecord?.bankAccounts || []).filter((b) => b.active);
-    if (activeBanks.length > 0 && !reportBank) {
-      setReportBank(activeBanks[0].bankName);
+    if (displayedBankAccounts.length > 0 && !reportBank) {
+      setReportBank(displayedBankAccounts[0].bankName);
     }
     setReportPaymentModalOpen(true);
   }
@@ -396,10 +449,50 @@ export default function Layout() {
       return;
     }
 
+    // Sincronización en caliente del plan de servicio y cuentas de la plataforma desde Firestore
+    try {
+      const cfg = loadFirebaseConfig();
+      if (cfg) {
+        const { initializeApp, getApps } = await import('firebase/app');
+        const { getFirestore, collection, query, where, getDocs, doc, getDoc } = await import('firebase/firestore');
+        const fs = getFirestore(getApps()[0] ?? initializeApp(cfg));
+
+        // 1. Descargar planes de la organización
+        const planSnap = await getDocs(
+          query(collection(fs, 'plans'), where('tenantId', '==', session.tenantId)),
+        );
+        for (const docSnap of planSnap.docs) {
+          const remotePlan = docSnap.data() as ServicePlan;
+          if (remotePlan && remotePlan.planId) {
+            const localPlan = await db.plans.get(remotePlan.planId);
+            if (!localPlan || String(remotePlan.updatedAt ?? '') >= String(localPlan.updatedAt ?? '')) {
+              await db.plans.put({ ...remotePlan, syncStatus: 'SYNCED' });
+            }
+          }
+        }
+
+        // 2. Descargar cuentas bancarias oficiales de la plataforma
+        const bankSnap = await getDoc(doc(fs, 'platform_config', 'bank_accounts'));
+        if (bankSnap.exists()) {
+          const bData = bankSnap.data();
+          if (Array.isArray(bData?.accounts) && bData.accounts.length > 0) {
+            setPlatformBankAccounts(bData.accounts as BankAccountInfo[]);
+          }
+        }
+      }
+    } catch {
+      /* silencio en fallos transitorios de red */
+    }
+
     const nextLocked = remote.data.appLocked === true;
     const nextUnlocked = remote.data.unlockedByAdmin === true;
     const nextOfflineBlocked = remote.data.offlineBlocked === true;
     const nextBannerDeactivated = remote.data.paymentBannerDeactivated === true;
+    const nextClientPortalEnabled = remote.data.clientPortalEnabled !== false;
+    const nextAuditModuleEnabled = remote.data.auditModuleEnabled === true;
+    const nextSocioModuleEnabled = remote.data.socioModuleEnabled === true;
+    const nextAllowMultipleSessions = remote.data.allowMultipleSessions === true;
+    const nextMaxAdmins = typeof remote.data.maxAdmins === 'number' ? remote.data.maxAdmins : 1;
     const nextWhatsApp =
       typeof remote.data.paymentWhatsAppPhone === 'string'
         ? remote.data.paymentWhatsAppPhone
@@ -414,57 +507,58 @@ export default function Layout() {
         : undefined;
     const nextNotice = (remote.data.notice ?? undefined) as Tenant['notice'];
     const nextActiveAbono = (remote.data.activeAbono ?? undefined) as Tenant['activeAbono'];
-    if (!local) return;
+
+    const targetLocal = local ?? ({
+      tenantId: session.tenantId,
+      name: remote.data.name || session.tenantName,
+      adminUid: session.userId,
+      status: remote.status,
+      clientPortalEnabled: nextClientPortalEnabled,
+      createdAt: String(remote.data.createdAt || todayStr()),
+      updatedAt: String(remote.data.updatedAt || todayStr()),
+      syncStatus: 'SYNCED',
+    } as Tenant);
+
     const changed =
+      !local ||
       local.appLocked !== nextLocked ||
       local.unlockedByAdmin !== nextUnlocked ||
       local.offlineBlocked !== nextOfflineBlocked ||
       local.paymentBannerDeactivated !== nextBannerDeactivated ||
+      local.clientPortalEnabled !== nextClientPortalEnabled ||
+      local.auditModuleEnabled !== nextAuditModuleEnabled ||
+      local.socioModuleEnabled !== nextSocioModuleEnabled ||
+      local.allowMultipleSessions !== nextAllowMultipleSessions ||
+      local.maxAdmins !== nextMaxAdmins ||
       local.paymentWhatsAppPhone !== nextWhatsApp ||
       local.paymentBannerDismissible !== nextPaymentDismissible ||
       local.paymentBannerExpiresAt !== nextPaymentExpiresAt ||
       JSON.stringify(local.bankAccounts ?? null) !== JSON.stringify(nextBankAccounts ?? null) ||
       JSON.stringify(local.notice ?? null) !== JSON.stringify(nextNotice ?? null) ||
       JSON.stringify(local.activeAbono ?? null) !== JSON.stringify(nextActiveAbono ?? null);
-    if (!changed) return;
-    await db.tenants.put({
-      ...local,
-      appLocked: nextLocked,
-      unlockedByAdmin: nextUnlocked,
-      offlineBlocked: nextOfflineBlocked,
-      paymentBannerDeactivated: nextBannerDeactivated,
-      paymentWhatsAppPhone: nextWhatsApp,
-      bankAccounts: nextBankAccounts,
-      paymentBannerDismissible: nextPaymentDismissible,
-      paymentBannerExpiresAt: nextPaymentExpiresAt,
-      notice: nextNotice,
-      activeAbono: nextActiveAbono,
-      updatedAt: String(remote.data.updatedAt ?? local.updatedAt),
-      syncStatus: 'SYNCED',
-    });
 
-    // Sincronización en caliente del plan de servicio de la organización desde Firestore para mantener cuotas y mora al día
-    try {
-      const cfg = loadFirebaseConfig();
-      if (cfg) {
-        const { initializeApp, getApps } = await import('firebase/app');
-        const { getFirestore, collection, query, where, getDocs } = await import('firebase/firestore');
-        const fs = getFirestore(getApps()[0] ?? initializeApp(cfg));
-        const planSnap = await getDocs(
-          query(collection(fs, 'plans'), where('tenantId', '==', session.tenantId)),
-        );
-        for (const docSnap of planSnap.docs) {
-          const remotePlan = docSnap.data() as ServicePlan;
-          if (remotePlan && remotePlan.planId) {
-            const localPlan = await db.plans.get(remotePlan.planId);
-            if (!localPlan || String(remotePlan.updatedAt ?? '') >= String(localPlan.updatedAt ?? '')) {
-              await db.plans.put({ ...remotePlan, syncStatus: 'SYNCED' });
-            }
-          }
-        }
-      }
-    } catch {
-      /* silencio en fallos transitorios de red */
+    if (changed) {
+      await db.tenants.put({
+        ...targetLocal,
+        appLocked: nextLocked,
+        unlockedByAdmin: nextUnlocked,
+        offlineBlocked: nextOfflineBlocked,
+        paymentBannerDeactivated: nextBannerDeactivated,
+        clientPortalEnabled: nextClientPortalEnabled,
+        auditModuleEnabled: nextAuditModuleEnabled,
+        socioModuleEnabled: nextSocioModuleEnabled,
+        allowMultipleSessions: nextAllowMultipleSessions,
+        maxAdmins: nextMaxAdmins,
+        paymentWhatsAppPhone: nextWhatsApp,
+        bankAccounts: nextBankAccounts,
+        paymentBannerDismissible: nextPaymentDismissible,
+        paymentBannerExpiresAt: nextPaymentExpiresAt,
+        notice: nextNotice,
+        activeAbono: nextActiveAbono,
+        updatedAt: String(remote.data.updatedAt ?? targetLocal.updatedAt),
+        syncStatus: 'SYNCED',
+      });
+      refreshSessionFlags();
     }
   }
 
@@ -606,10 +700,16 @@ export default function Layout() {
       { to: '/', label: 'Inicio', icon: LayoutDashboard, end: true },
       { to: '/borrowers', label: 'Prestatarios', icon: Users },
       { to: '/loans', label: 'Préstamos', icon: HandCoins },
-      { to: '/requests', label: 'Solicitudes', icon: ClipboardList },
+    ];
+
+    if (tenantRecord?.clientPortalEnabled !== false) {
+      navItems.push({ to: '/requests', label: 'Solicitudes', icon: ClipboardList });
+    }
+
+    navItems.push(
       { to: '/collections', label: 'Cobros', icon: CalendarClock },
       { to: '/simulator', label: 'Simulador', icon: Calculator },
-    ];
+    );
 
     // Módulo de Auditoría (Beneficio configurable por Super Admin)
     if (tenantRecord?.auditModuleEnabled === true) {
@@ -622,6 +722,15 @@ export default function Layout() {
     }
 
     navItems.push({ to: '/settings', label: 'Ajustes', icon: Settings });
+  }
+
+  // Prevenir parpadeo o montaje de rutas durante F5 si el registro del tenant aún está cargando
+  if (session?.role === 'TENANT_ADMIN' && tenantRecord === undefined && !isCachedLocked) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-950 text-slate-400">
+        <Loader2 className="h-8 w-8 animate-spin text-emerald-500" />
+      </div>
+    );
   }
 
   return (
@@ -931,39 +1040,46 @@ export default function Layout() {
               <h2 className="text-xl font-bold text-white">
                 {isAbonoGraceExpired
                   ? 'Servicio suspendido: Plazo de abono vencido'
-                  : isOverdueMoreThan5Days
+                  : monthlyInvoice.maxDaysOverdue > 0
                   ? `Servicio suspendido por mora (${monthlyInvoice.maxDaysOverdue} días)`
-                  : isLockedByCobroInsistente
-                  ? 'Cobro exigible: Servicio suspendido'
-                  : isAutoLockedForMora
-                  ? 'Servicio suspendido por falta de pago'
-                  : 'Servicio suspendido'}
+                  : 'Servicio suspendido por falta de pago'}
               </h2>
               <p className="mt-2 text-sm leading-relaxed text-slate-300">
                 {isAbonoGraceExpired
-                  ? `Excediste el plazo de 15 días concedido tras tu abono para pagar el saldo restante de ${formatCOP(activeAbono?.remainingAmount || 0)}. Tu cuenta ha sido suspendida automáticamente hasta completar el pago.`
-                  : isOverdueMoreThan5Days || isLockedByCobroInsistente || isAutoLockedForMora
-                  ? `Tu organización registra una factura exigible por ${formatCOP(monthlyInvoice.totalInvoiceAmount)}${monthlyInvoice.maxDaysOverdue > 0 ? ` con ${monthlyInvoice.maxDaysOverdue} días de mora acumulados` : ''}. El sistema de cobro ha suspendido las operaciones de la app hasta que realices el pago o envíes tu comprobante.`
-                  : 'El acceso a PresMon está bloqueado por decisión del Super Administrador. Tus datos están a salvo y se restituirá el acceso inmediatamente después de ponerte al día.'}
+                  ? `Excediste el plazo de 15 días concedido tras tu abono para pagar el saldo restante de ${formatCOP(activeAbono?.remainingAmount || 0)}. El servicio cloud ha sido suspendido automáticamente hasta completar el pago.`
+                  : `El acceso a PresMon se encuentra temporalmente suspendido debido a la falta de pago del servicio cloud mensual. Para reactivar de inmediato el acceso a la plataforma, la sincronización entre dispositivos y la protección de tus datos, debes cancelar el saldo pendiente o reportar tu comprobante.`}
               </p>
-              {monthlyInvoice.totalInvoiceAmount > 0 && (
-                <div className="mt-4 rounded-lg bg-red-500/10 p-3.5 text-left text-sm border border-red-500/20">
-                  <div className="flex justify-between items-center mb-1">
-                    <span className="text-xs font-semibold text-slate-400 uppercase">Factura mensual exigible</span>
-                    {monthlyInvoice.maxDaysOverdue > 0 && (
-                      <span className="font-mono text-xs font-bold text-red-400">
-                        {monthlyInvoice.maxDaysOverdue} días de mora
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xl font-black text-red-400">
-                    {formatCOP(monthlyInvoice.totalInvoiceAmount)}
-                  </p>
-                  <p className="mt-1 text-xs text-slate-300">
-                    {monthlyInvoice.summaryText}
-                  </p>
+
+              <div className="mt-4 rounded-xl bg-red-500/10 p-4 text-left text-sm border border-red-500/20 space-y-1.5">
+                <div className="flex justify-between items-center">
+                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+                    {monthlyInvoice.cloudIncluded ? 'Servicio Cloud / Factura exigible' : 'Factura de servicio pendiente'}
+                  </span>
+                  {monthlyInvoice.maxDaysOverdue > 0 ? (
+                    <span className="font-mono text-xs font-bold text-red-400 bg-red-500/20 px-2 py-0.5 rounded-full border border-red-500/30">
+                      {monthlyInvoice.maxDaysOverdue} días de mora
+                    </span>
+                  ) : (
+                    <span className="font-mono text-xs font-bold text-amber-400 bg-amber-500/20 px-2 py-0.5 rounded-full border border-amber-500/30">
+                      Pago exigible
+                    </span>
+                  )}
                 </div>
-              )}
+                {effectiveDebtAmount > 0 ? (
+                  <p className="text-2xl font-black text-red-400">
+                    {formatCOP(effectiveDebtAmount)}
+                  </p>
+                ) : (
+                  <p className="text-base font-bold text-red-400">
+                    Monto de suscripción mensual pendiente
+                  </p>
+                )}
+                <p className="text-xs text-slate-300">
+                  {monthlyInvoice.summaryText !== 'Sin cobros pendientes'
+                    ? monthlyInvoice.summaryText
+                    : 'Cuota de mantenimiento del servicio cloud y sincronización de base de datos.'}
+                </p>
+              </div>
 
               {pendingPaymentReport && (
                 <div className="mt-3 text-left rounded-xl bg-amber-500/10 border border-amber-500/20 p-3 text-xs text-amber-300">
@@ -976,7 +1092,7 @@ export default function Layout() {
 
               <div className="mt-5 space-y-2">
                 <button
-                  onClick={() => handleOpenReportModal()}
+                  onClick={() => handleOpenReportModal(effectiveDebtAmount)}
                   className="w-full cursor-pointer rounded-xl bg-emerald-600 px-4 py-2.5 font-bold text-white transition-colors hover:bg-emerald-500 flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/30 text-xs sm:text-sm"
                 >
                   <Upload size={16} /> Reportar Comprobante de Pago
@@ -990,7 +1106,7 @@ export default function Layout() {
                 <button
                   onClick={() =>
                     openWhatsApp(
-                      `Hola ChrizDev, soy ${session?.tenantName ?? 'un cliente'} de PresMon. Mi servicio está suspendido por factura pendiente de ${formatCOP(monthlyInvoice.totalInvoiceAmount)} (${monthlyInvoice.maxDaysOverdue} días de mora). Quiero ponerme al día o solicitar desbloqueo.`,
+                      `Hola ChrizDev, soy ${session?.tenantName ?? 'un cliente'} de PresMon. Mi servicio está suspendido por falta de pago del servicio cloud (monto pendiente: ${formatCOP(effectiveDebtAmount)}${monthlyInvoice.maxDaysOverdue > 0 ? `, ${monthlyInvoice.maxDaysOverdue} días de mora` : ''}). Quiero ponerme al día o solicitar cuentas de depósito.`,
                       effectiveWhatsApp,
                     )
                   }
@@ -1381,7 +1497,7 @@ export default function Layout() {
             </div>
 
             <div className="mt-4 space-y-3 max-h-[60vh] overflow-y-auto pr-1">
-              {(tenantRecord?.bankAccounts || []).filter((b) => b.active).length === 0 ? (
+              {displayedBankAccounts.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center">
                   <CreditCard size={32} className="mx-auto text-slate-400 mb-2" />
                   <p className="text-sm font-semibold text-slate-700">
@@ -1394,7 +1510,7 @@ export default function Layout() {
                     onClick={() => {
                       setBankAccountsModalOpen(false);
                       openWhatsApp(
-                        `Hola ChrizDev, necesito los datos de cuenta bancaria para pagar mi mensualidad de PresMon (${formatCOP(monthlyInvoice.totalInvoiceAmount)}).`,
+                        `Hola ChrizDev, necesito los datos de cuenta bancaria para pagar mi mensualidad de PresMon (${formatCOP(effectiveDebtAmount)}).`,
                         effectiveWhatsApp,
                       );
                     }}
@@ -1404,9 +1520,7 @@ export default function Layout() {
                   </button>
                 </div>
               ) : (
-                (tenantRecord?.bankAccounts || [])
-                  .filter((b) => b.active)
-                  .map((acc) => (
+                displayedBankAccounts.map((acc) => (
                     <div
                       key={acc.id}
                       className="rounded-xl border border-slate-200 bg-gradient-to-br from-slate-50 to-white p-4 shadow-sm"

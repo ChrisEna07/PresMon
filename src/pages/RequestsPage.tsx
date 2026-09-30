@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
+  AlertTriangle,
   BadgeCheck,
   CheckCircle2,
   ClipboardList,
@@ -416,6 +417,18 @@ export default function RequestsPage() {
           </div>
         }
       />
+
+      {tenant && tenant.clientPortalEnabled === false && (
+        <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-amber-900 shadow-xs">
+          <div className="flex items-center gap-2 font-bold text-sm">
+            <AlertTriangle size={16} className="text-amber-600" />
+            Portal de clientes deshabilitado
+          </div>
+          <p className="mt-1 text-xs text-amber-800 leading-relaxed">
+            Esta función ha sido desactivada para tu organización. Los clientes externos no pueden enviar nuevas solicitudes de crédito a través del portal web ni consultar saldos mientras permanezca inactivo.
+          </p>
+        </div>
+      )}
 
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label="Nuevas" value={String(pendingCount)} icon={ClipboardList} tone={pendingCount > 0 ? 'amber' : 'sky'} />

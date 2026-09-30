@@ -1,3 +1,20 @@
+import type { BankAccountInfo } from '../db/models';
+
+/**
+ * Cuentas bancarias oficiales de la plataforma (ChrizDev) para pagos de suscripción.
+ */
+export const DEFAULT_OFFICIAL_BANK_ACCOUNTS: BankAccountInfo[] = [
+  {
+    id: 'default-nequi-chrizdev',
+    bankName: 'Nequi',
+    accountType: 'WALLET',
+    accountNumber: '3183517802',
+    holderName: 'Christian Romero',
+    active: true,
+    notes: 'Transferencias directas Nequi o llaves Bre-B',
+  },
+];
+
 /**
  * Número telefónico oficial de soporte y administración general (ChrizDev).
  * Código de país Colombia: +57.

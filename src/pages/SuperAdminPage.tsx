@@ -714,12 +714,25 @@ export default function SuperAdminPage() {
       );
       return;
     }
+    const now = new Date().toISOString();
     await saveTenant({
       ...tenant,
       appLocked: locked,
       unlockedByAdmin: !locked,
+      paymentBannerDeactivated: !locked ? true : tenant.paymentBannerDeactivated,
       wipeLocalData: false,
-      updatedAt: new Date().toISOString(),
+      notice: !locked
+        ? {
+            title: 'Aviso del Servicio Cloud',
+            message:
+              'Recuerda que no pagar tu servicio cloud mensual es causal de bloqueo ya que los gastos de servicio cloud no pueden ser pagados si tu no pagas el servicio',
+            level: 'warning',
+            dismissible: true,
+            updatedAt: now,
+            active: true,
+          }
+        : tenant.notice,
+      updatedAt: now,
       syncStatus: 'PENDING',
     });
     await logAudit({
@@ -1070,7 +1083,25 @@ export default function SuperAdminPage() {
       syncStatus: 'PENDING',
     });
     pushToCloud();
-    toast('Cuenta bancaria guardada.', 'success');
+
+    // Sincronizar cuentas a nivel plataforma para que cualquier organización las reciba
+    try {
+      const { loadFirebaseConfig } = await import('../lib/sync/firebaseConfig');
+      const cfg = loadFirebaseConfig();
+      if (cfg) {
+        const { initializeApp, getApps } = await import('firebase/app');
+        const { getFirestore, doc, setDoc } = await import('firebase/firestore');
+        const fs = getFirestore(getApps()[0] ?? initializeApp(cfg));
+        await setDoc(doc(fs, 'platform_config', 'bank_accounts'), {
+          accounts: currentAccounts,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    } catch {
+      /* ignore */
+    }
+
+    toast('Cuenta bancaria guardada y sincronizada.', 'success');
     setBankDialogOpen(false);
   }
 
@@ -1084,6 +1115,23 @@ export default function SuperAdminPage() {
       syncStatus: 'PENDING',
     });
     pushToCloud();
+
+    try {
+      const { loadFirebaseConfig } = await import('../lib/sync/firebaseConfig');
+      const cfg = loadFirebaseConfig();
+      if (cfg) {
+        const { initializeApp, getApps } = await import('firebase/app');
+        const { getFirestore, doc, setDoc } = await import('firebase/firestore');
+        const fs = getFirestore(getApps()[0] ?? initializeApp(cfg));
+        await setDoc(doc(fs, 'platform_config', 'bank_accounts'), {
+          accounts: nextAccounts,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    } catch {
+      /* ignore */
+    }
+
     toast('Cuenta bancaria eliminada.', 'info');
   }
 
@@ -1099,12 +1147,29 @@ export default function SuperAdminPage() {
       syncStatus: 'PENDING',
     });
     pushToCloud();
+
+    try {
+      const { loadFirebaseConfig } = await import('../lib/sync/firebaseConfig');
+      const cfg = loadFirebaseConfig();
+      if (cfg) {
+        const { initializeApp, getApps } = await import('firebase/app');
+        const { getFirestore, doc, setDoc } = await import('firebase/firestore');
+        const fs = getFirestore(getApps()[0] ?? initializeApp(cfg));
+        await setDoc(doc(fs, 'platform_config', 'bank_accounts'), {
+          accounts: nextAccounts,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    } catch {
+      /* ignore */
+    }
   }
 
   async function handleApproveReport(report: PaymentReport) {
     if (!session) return;
     const tenant = (tenants ?? []).find((t) => t.tenantId === report.tenantId);
     const now = new Date().toISOString();
+    const today = todayStr();
     const updatedReport: PaymentReport = {
       ...report,
       status: 'APPROVED',
@@ -1115,10 +1180,54 @@ export default function SuperAdminPage() {
     };
     await db.payment_reports.put(updatedReport);
 
+    // Validación si la organización tiene plan de pago mensual y actualización de cobertura
+    const plan = planByTenant.get(report.tenantId) ?? (await db.plans.where('tenantId').equals(report.tenantId).first());
+    const isMonthlyCloudPlan = plan && plan.cloudServiceIncluded === true && (Number(plan.cloudMonthlyFee) || 0) > 0;
+    const invoice = plan ? computeMonthlyInvoice(plan, today) : null;
+    const isPayingFullOrCloud =
+      !invoice ||
+      report.amount >= invoice.totalInvoiceAmount ||
+      (isMonthlyCloudPlan && report.amount >= (Number(plan?.cloudMonthlyFee) || 0));
+
+    if (plan && isMonthlyCloudPlan && isPayingFullOrCloud) {
+      const currentPaidThrough = plan.cloudPaidThrough || today;
+      const nextMonthDate = addDaysStr(currentPaidThrough < today ? today : currentPaidThrough, 30);
+      const updatedInstallments = (plan.installments ?? []).map((inst) => {
+        if (inst.status === 'PENDING' && (!invoice || report.amount >= invoice.totalInvoiceAmount)) {
+          return {
+            ...inst,
+            status: 'PAID' as const,
+            paidAmount: inst.amount,
+            paidAt: now,
+          };
+        }
+        return inst;
+      });
+      await db.plans.put({
+        ...plan,
+        cloudPaidThrough: nextMonthDate,
+        installments: updatedInstallments,
+        updatedAt: now,
+        syncStatus: 'PENDING',
+      });
+    }
+
     if (tenant) {
       await saveTenant({
         ...tenant,
+        appLocked: false,
+        unlockedByAdmin: true,
         paymentBannerDeactivated: true,
+        activeAbono: undefined,
+        notice: {
+          title: 'Aviso del Servicio Cloud',
+          message:
+            'Recuerda que no pagar tu servicio cloud mensual es causal de bloqueo ya que los gastos de servicio cloud no pueden ser pagados si tu no pagas el servicio',
+          level: 'warning',
+          dismissible: true,
+          updatedAt: now,
+          active: true,
+        },
         updatedAt: now,
         syncStatus: 'PENDING',
       });
@@ -1135,11 +1244,12 @@ export default function SuperAdminPage() {
         monto: report.amount,
         referencia: report.referenceNumber,
         banco: report.bankName,
+        planValidado: isMonthlyCloudPlan,
       },
     });
 
     pushToCloud();
-    toast(`Pago de ${formatCOP(report.amount)} APROBADO. Se desactivó el banner de cobro para «${tenant?.name ?? 'la organización'}».`, 'success');
+    toast(`Pago de ${formatCOP(report.amount)} APROBADO. Organización desbloqueada y al día.`, 'success');
   }
 
   async function handleApproveReportAsAbono(report: PaymentReport) {
@@ -1203,21 +1313,36 @@ export default function SuperAdminPage() {
     await db.payment_reports.put(updatedReport);
 
     if (tenant) {
+      const isFullPayment = remaining === 0;
       await saveTenant({
         ...tenant,
-        activeAbono: {
-          abonoId: uid(),
-          concept,
-          amountPaid: report.amount,
-          remainingAmount: remaining,
-          totalDue,
-          abonoDate: today,
-          graceUntil,
-          active: true,
-          notes: `Comprobante ref: ${report.referenceNumber}`,
-        },
+        appLocked: isFullPayment ? false : tenant.appLocked,
         unlockedByAdmin: true,
-        paymentBannerDeactivated: false,
+        paymentBannerDeactivated: isFullPayment,
+        activeAbono: isFullPayment
+          ? undefined
+          : {
+              abonoId: uid(),
+              concept,
+              amountPaid: report.amount,
+              remainingAmount: remaining,
+              totalDue,
+              abonoDate: today,
+              graceUntil,
+              active: true,
+              notes: `Comprobante ref: ${report.referenceNumber}`,
+            },
+        notice: isFullPayment
+          ? {
+              title: 'Aviso del Servicio Cloud',
+              message:
+                'Recuerda que no pagar tu servicio cloud mensual es causal de bloqueo ya que los gastos de servicio cloud no pueden ser pagados si tu no pagas el servicio',
+              level: 'warning',
+              dismissible: true,
+              updatedAt: now,
+              active: true,
+            }
+          : tenant.notice,
         updatedAt: now,
         syncStatus: 'PENDING',
       });
