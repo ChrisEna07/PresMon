@@ -62,6 +62,8 @@ export interface TenantNotice {
    */
   dismissible?: boolean;
   active?: boolean;
+  /** Modo de visualización: banner superior tradicional o ventana card modal flotante. */
+  displayMode?: 'banner' | 'card_window';
 }
 
 export interface BankAccountInfo {
@@ -92,6 +94,21 @@ export interface PaymentReport extends BaseRecord {
   reviewedAt?: string;
   reviewedBy?: string;
   rejectionReason?: string;
+}
+
+export interface LegalAcceptance extends BaseRecord {
+  acceptanceId: string;
+  tenantId: string;
+  tenantName: string;
+  userId: string;
+  userName: string;
+  userDisplayName: string;
+  acceptedAt: string;
+  contractVersion: string;
+  ipAddress?: string;
+  userAgent: string;
+  contractText: string;
+  status: 'ACTIVE' | 'REVOKED';
 }
 
 export interface OfflineLicenseInfo {
@@ -169,6 +186,8 @@ export interface Tenant extends BaseRecord {
   lastSeenDevice?: string;
   /** Información del abono vigente con vigencia de 15 días para completar saldo. */
   activeAbono?: TenantAbonoInfo;
+  /** Indica si la organización ya hizo uso de la única gracia de abono a 15 días permitida en su primer pago. */
+  hasUsedAbonoGrace?: boolean;
   /** Máxima cantidad de administradores permitidos para esta organización (default 1). */
   maxAdmins?: number;
   /** Si es true, permite múltiples sesiones en varios dispositivos. Si es false (default), solo 1 sesión activa a la vez. */

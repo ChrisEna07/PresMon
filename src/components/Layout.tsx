@@ -58,6 +58,8 @@ import {
   CHRIZDEV_WHATSAPP_PHONE,
   DEFAULT_OFFICIAL_BANK_ACCOUNTS,
 } from '../lib/share';
+import { CURRENT_CONTRACT_VERSION } from '../lib/legalContract';
+import { LegalContractModal } from './LegalContractModal';
 import { computeMonthlyInvoice } from '../lib/billingEngine';
 import {
   checkOfflineTelemetry,
@@ -105,6 +107,21 @@ export default function Layout() {
     () => computeMonthlyInvoice(currentPlan, todayStr()),
     [currentPlan],
   );
+
+  const legalAcceptance = useLiveQuery(
+    async () => {
+      if (!session || session.role !== 'TENANT_ADMIN' || !session.tenantId) return null;
+      const rec = await db.legal_acceptances
+        .where('tenantId')
+        .equals(session.tenantId)
+        .filter((a) => a.contractVersion === CURRENT_CONTRACT_VERSION && a.status === 'ACTIVE')
+        .first();
+      return rec ?? null;
+    },
+    [session?.tenantId, session?.role],
+  );
+
+  const isLegalRequired = session?.role === 'TENANT_ADMIN' && legalAcceptance === null;
 
   const [bannerDismissedFor, setBannerDismissedFor] = useState('');
   const [noticeDismissedAt, setNoticeDismissedAt] = useState('');
@@ -298,6 +315,7 @@ export default function Layout() {
     !!activeNotice?.expiresAt &&
     new Date(activeNotice.expiresAt).getTime() < Date.now();
   const isNoticeDismissible = activeNotice?.dismissible !== false;
+  const [isNoticeExpanded, setIsNoticeExpanded] = useState(false);
 
   const showNotice =
     session?.role === 'TENANT_ADMIN' &&
@@ -1003,30 +1021,145 @@ export default function Layout() {
           </div>
         )}
 
-        {showNotice && activeNotice && (
+        {/* Notice como Ventana Card Modal Flotante */}
+        {showNotice && activeNotice && activeNotice.displayMode === 'card_window' && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm animate-in fade-in duration-200">
+            <div
+              className={cn(
+                'w-full max-w-lg rounded-2xl border p-6 shadow-2xl relative transition-all',
+                activeNotice.level === 'danger'
+                  ? 'border-red-500/50 bg-slate-900 text-white shadow-red-500/10'
+                  : activeNotice.level === 'warning'
+                    ? 'border-amber-500/50 bg-slate-900 text-white shadow-amber-500/10'
+                    : 'border-sky-500/50 bg-slate-900 text-white shadow-sky-500/10',
+              )}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div
+                    className={cn(
+                      'flex h-11 w-11 shrink-0 items-center justify-center rounded-xl shadow-md',
+                      activeNotice.level === 'danger'
+                        ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                        : activeNotice.level === 'warning'
+                          ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                          : 'bg-sky-500/20 text-sky-400 border border-sky-500/30',
+                    )}
+                  >
+                    <Megaphone size={22} />
+                  </div>
+                  <div>
+                    <span
+                      className={cn(
+                        'inline-block px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase mb-1',
+                        activeNotice.level === 'danger'
+                          ? 'bg-red-500/30 text-red-300'
+                          : activeNotice.level === 'warning'
+                            ? 'bg-amber-500/30 text-amber-300'
+                            : 'bg-sky-500/30 text-sky-300',
+                      )}
+                    >
+                      {activeNotice.level === 'danger'
+                        ? 'Aviso Crítico'
+                        : activeNotice.level === 'warning'
+                          ? 'Advertencia Importante'
+                          : 'Información Oficial'}
+                    </span>
+                    <h3 className="font-bold text-lg text-white">
+                      {activeNotice.title?.trim() ? activeNotice.title : 'Aviso de la Administración'}
+                    </h3>
+                  </div>
+                </div>
+
+                {isNoticeDismissible && (
+                  <button
+                    onClick={() => setNoticeDismissedAt(activeNotice.updatedAt)}
+                    className="cursor-pointer rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white transition-colors"
+                    aria-label="Cerrar ventana"
+                  >
+                    <X size={18} />
+                  </button>
+                )}
+              </div>
+
+              <div className="mt-4 max-h-72 overflow-y-auto rounded-xl bg-slate-950/70 p-4 border border-slate-800 text-sm leading-relaxed text-slate-200 whitespace-pre-wrap">
+                {activeNotice.message}
+              </div>
+
+              <div className="mt-5 flex items-center justify-between gap-3">
+                <span className="text-xs text-slate-400">
+                  {isNoticeDismissible ? 'Puedes cerrar este aviso en cualquier momento.' : 'Aviso obligatorio por política administrativa.'}
+                </span>
+                {isNoticeDismissible && (
+                  <button
+                    onClick={() => setNoticeDismissedAt(activeNotice.updatedAt)}
+                    className="cursor-pointer rounded-xl bg-slate-800 hover:bg-slate-700 px-4 py-2 font-medium text-slate-200 text-sm transition-colors border border-slate-700"
+                  >
+                    Entendido / Cerrar
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Notice como Banner Superior con soporte Carousel / Desplegable */}
+        {showNotice && activeNotice && activeNotice.displayMode !== 'card_window' && (
           <div
             className={cn(
-              'flex flex-wrap items-center gap-x-2 gap-y-1 px-4 py-2.5 text-sm',
+              'px-4 py-2.5 text-sm transition-all shadow-sm',
               activeNotice.level === 'danger'
                 ? 'bg-red-600 text-white'
                 : activeNotice.level === 'warning'
-                  ? 'bg-amber-100 text-amber-900'
-                  : 'bg-sky-100 text-sky-900',
+                  ? 'bg-amber-100 text-amber-950 border-b border-amber-200'
+                  : 'bg-sky-100 text-sky-950 border-b border-sky-200',
             )}
           >
-            <Megaphone size={16} />
-            <span className="font-semibold">
-              {activeNotice.title?.trim() ? activeNotice.title : 'Aviso de ChrizDev:'}
-            </span>
-            <span>{activeNotice.message}</span>
-            {isNoticeDismissible && (
-              <button
-                onClick={() => setNoticeDismissedAt(activeNotice.updatedAt)}
-                className="ml-auto cursor-pointer rounded p-1 opacity-70 hover:opacity-100"
-                aria-label="Ocultar aviso"
-              >
-                <X size={15} />
-              </button>
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 overflow-hidden flex-1 min-w-0">
+                <Megaphone size={16} className="shrink-0" />
+                <span className="font-semibold shrink-0">
+                  {activeNotice.title?.trim() ? activeNotice.title : 'Aviso de ChrizDev:'}
+                </span>
+
+                {activeNotice.message.length > 90 && !isNoticeExpanded ? (
+                  <div className="flex-1 overflow-hidden relative">
+                    <span className="truncate block">
+                      {activeNotice.message}
+                    </span>
+                  </div>
+                ) : (
+                  <span className={cn('text-sm', isNoticeExpanded ? 'break-words' : 'truncate')}>
+                    {activeNotice.message}
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                {activeNotice.message.length > 90 && (
+                  <button
+                    onClick={() => setIsNoticeExpanded((prev) => !prev)}
+                    className="cursor-pointer rounded px-2 py-0.5 text-xs font-semibold underline underline-offset-2 opacity-80 hover:opacity-100 transition-opacity"
+                  >
+                    {isNoticeExpanded ? 'Ver menos' : 'Ver mensaje completo'}
+                  </button>
+                )}
+                {isNoticeDismissible && (
+                  <button
+                    onClick={() => setNoticeDismissedAt(activeNotice.updatedAt)}
+                    className="cursor-pointer rounded p-1 opacity-70 hover:opacity-100 transition-opacity"
+                    aria-label="Ocultar aviso"
+                  >
+                    <X size={15} />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {isNoticeExpanded && activeNotice.message.length > 90 && (
+              <div className="mt-2 pt-2 border-t border-current/15 text-xs sm:text-sm leading-relaxed whitespace-pre-wrap">
+                {activeNotice.message}
+              </div>
             )}
           </div>
         )}
@@ -1046,9 +1179,19 @@ export default function Layout() {
               </h2>
               <p className="mt-2 text-sm leading-relaxed text-slate-300">
                 {isAbonoGraceExpired
-                  ? `Excediste el plazo de 15 días concedido tras tu abono para pagar el saldo restante de ${formatCOP(activeAbono?.remainingAmount || 0)}. El servicio cloud ha sido suspendido automáticamente hasta completar el pago.`
-                  : `El acceso a PresMon se encuentra temporalmente suspendido debido a la falta de pago del servicio cloud mensual. Para reactivar de inmediato el acceso a la plataforma, la sincronización entre dispositivos y la protección de tus datos, debes cancelar el saldo pendiente o reportar tu comprobante.`}
+                  ? `Excediste el plazo de 15 días concedido tras tu abono para pagar el saldo restante de ${formatCOP(activeAbono?.remainingAmount || 0)}. El servicio se encuentra suspendido. Para reactivar la app es OBLIGATORIO realizar el PAGO TOTAL de la deuda acumulada. No se otorgan nuevas prórrogas.`
+                  : `El acceso a PresMon se encuentra suspendido debido a la falta de pago del servicio cloud y licenciamiento. Para reactivar de inmediato el acceso a la plataforma y la sincronización, debes realizar el PAGO TOTAL del saldo acumulado. No se aceptan cuotas parciales ni extensiones de 15 días.`}
               </p>
+
+              <div className="mt-3 rounded-xl bg-amber-500/10 border border-amber-500/30 p-3 text-left text-xs text-amber-200 space-y-1">
+                <p className="font-bold flex items-center gap-1.5 text-amber-400">
+                  <AlertTriangle size={14} className="shrink-0" />
+                  Condición Indispensable: PAGO TOTAL para Desbloqueo
+                </p>
+                <p className="leading-relaxed text-slate-300">
+                  Para levantar la suspensión de la plataforma debes cancelar el <strong>100% de la deuda exigible</strong>. La gracia de 15 días mediante abono parcial es un beneficio excepcional que <strong>solo se concede por única vez en el primer pago</strong>. Los pagos subsecuentes deben realizarse de forma completa en la fecha estipulada.
+                </p>
+              </div>
 
               <div className="mt-4 rounded-xl bg-red-500/10 p-4 text-left text-sm border border-red-500/20 space-y-1.5">
                 <div className="flex justify-between items-center">
@@ -1127,6 +1270,19 @@ export default function Layout() {
               </button>
             </div>
           </div>
+        )}
+
+        {isLegalRequired && session && session.tenantId && (
+          <LegalContractModal
+            tenantId={session.tenantId}
+            tenantName={session.tenantName}
+            userId={session.userId}
+            userName={session.username}
+            userDisplayName={session.displayName}
+            onAccepted={() => {
+              // El useLiveQuery se re-ejecuta de inmediato al guardarse la aceptación
+            }}
+          />
         )}
 
         <main className="mx-auto max-w-6xl p-4 pb-24 lg:pb-8">

@@ -1,5 +1,5 @@
 import type { PlanInstallment, ServicePlan } from '../db/models';
-import { addDaysStr, diffDays, nextMonthlyDue, todayStr } from './format';
+import { addDaysStr, addMonthsStr, diffDays, nextMonthlyDue, todayStr } from './format';
 
 export interface MonthlyInvoiceResult {
   /** Indica si el cobro de cloud está configurado e incluido en la factura mensual. */
@@ -14,6 +14,10 @@ export interface MonthlyInvoiceResult {
   cloudDaysRemaining: number;
   /** Días de mora acumulados en cloud (0 si no está vencida). */
   cloudDaysOverdue: number;
+  /** Cantidad de ciclos mensuales de cloud exigibles en esta factura. */
+  cloudCyclesCount: number;
+  /** Cantidad de ciclos mensuales de cloud en mora estricta. */
+  overdueCloudCyclesCount: number;
 
   /** Cuotas de la app pendientes que se suman a la factura (vencidas o por vencer pronto). */
   pendingInstallments: PlanInstallment[];
@@ -37,9 +41,45 @@ export interface MonthlyInvoiceResult {
 }
 
 /**
+ * Obtiene la fecha del primer vencimiento pendiente de cloud para un plan.
+ * Si nunca se ha registrado un pago (`cloudPaidThrough` vacío), se evalúa la fecha
+ * más antigua entre la creación del plan y la primera cuota de la app.
+ */
+export function getFirstUnpaidCloudDue(
+  plan: ServicePlan,
+  today: string = todayStr(),
+): string {
+  const billingDay = Math.min(28, Math.max(1, Number(plan.cloudBillingDay) || 1));
+  const dayStr = String(billingDay).padStart(2, '0');
+  const paidThrough = String(plan.cloudPaidThrough ?? '').trim();
+
+  if (paidThrough && paidThrough.length >= 10) {
+    const baseDate = `${paidThrough.slice(0, 8)}${dayStr}`;
+    const nextDate = addMonthsStr(baseDate, 1);
+    return `${nextDate.slice(0, 8)}${dayStr}`;
+  }
+
+  // Si paidThrough está vacío, determinamos cuándo inició la obligación:
+  // tomamos la fecha más antigua entre createdAt del plan y el vencimiento de la primera cuota
+  let startMonthStr = (plan.createdAt && plan.createdAt.length >= 7)
+    ? plan.createdAt.slice(0, 7)
+    : today.slice(0, 7);
+
+  if (plan.installments && plan.installments.length > 0) {
+    const sorted = [...plan.installments].sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+    if (sorted[0]?.dueDate && sorted[0].dueDate.slice(0, 7) < startMonthStr) {
+      startMonthStr = sorted[0].dueDate.slice(0, 7);
+    }
+  }
+
+  return `${startMonthStr}-${dayStr}`;
+}
+
+/**
  * Calcula la factura mensual de una organización:
  * 1. Evalúa el switch `cloudServiceIncluded`. Si está activo y la mensualidad cloud
- *    no está pagada (`cloudPaidThrough < nextCloudDue`), suma la mensualidad cloud.
+ *    no está pagada, acumula TODOS los ciclos mensuales vencidos y no pagados
+ *    (ej. 2 meses vencidos a $30.000 = $60.000).
  * 2. Revisa las cuotas pendientes del plan de la app (`status === 'PENDING'`).
  *    Suma todas las cuotas vencidas y las que vencen en el ciclo actual (hasta 7 días adelante).
  * 3. Calcula los días de mora acumulados y si se superan los 5 días de vencimiento.
@@ -55,6 +95,8 @@ export function computeMonthlyInvoice(
     cloudIsDue: false,
     cloudDaysRemaining: 0,
     cloudDaysOverdue: 0,
+    cloudCyclesCount: 0,
+    overdueCloudCyclesCount: 0,
     pendingInstallments: [],
     installmentsAmount: 0,
     totalInvoiceAmount: 0,
@@ -69,24 +111,35 @@ export function computeMonthlyInvoice(
   const cloudFee = Math.max(0, Number(plan.cloudMonthlyFee) || 0);
   const cloudIncluded = plan.cloudServiceIncluded === true && cloudFee > 0;
   const billingDay = Math.min(28, Math.max(1, Number(plan.cloudBillingDay) || 1));
-  const paidThrough = String(plan.cloudPaidThrough ?? '');
-  const nextDue = nextMonthlyDue(billingDay, paidThrough);
-  const cloudDiff = diffDays(today, nextDue); // negativo si nextDue < today (vencida)
-  const cloudIsDue = cloudIncluded && (!paidThrough || nextDue > paidThrough) && cloudDiff <= 7;
-  const cloudDaysOverdue = cloudIncluded && cloudDiff < 0 ? Math.abs(cloudDiff) : 0;
+  const dayStr = String(billingDay).padStart(2, '0');
+  const horizon = addDaysStr(today, 7);
 
-  result.cloudIncluded = cloudIncluded;
-  result.cloudFee = cloudFee;
-  result.nextCloudDue = nextDue;
-  result.cloudIsDue = cloudIsDue;
-  result.cloudDaysRemaining = cloudDiff;
-  result.cloudDaysOverdue = cloudDaysOverdue;
+  const overdueCycles: string[] = [];
+  const upcomingCycles: string[] = [];
+  let firstUnpaidDue = '';
+
+  if (cloudIncluded) {
+    firstUnpaidDue = getFirstUnpaidCloudDue(plan, today);
+    let currDue = firstUnpaidDue;
+    let iterations = 0;
+
+    while (currDue <= horizon && iterations < 60) {
+      iterations++;
+      if (currDue <= today) {
+        overdueCycles.push(currDue);
+      } else {
+        upcomingCycles.push(currDue);
+        break; // Solo el ciclo inmediato futuro entra en el horizonte de cobro
+      }
+      const nextMonth = addMonthsStr(currDue, 1);
+      currDue = `${nextMonth.slice(0, 8)}${dayStr}`;
+    }
+  }
 
   // Cuotas de la app:
   // Consideramos pendientes aquellas cuotas que ya vencieron (dueDate < today)
   // o que vencen dentro del horizonte del mes/ciclo (dueDate <= today + 7 días)
   // y que aún tengan saldo pendiente por pagar (amount - paidAmount > 0).
-  const horizon = addDaysStr(today, 7);
   const allInstallments = plan.installments ?? [];
   const relevantPendings = allInstallments
     .filter((inst) => {
@@ -102,16 +155,54 @@ export function computeMonthlyInvoice(
     return sum + remaining;
   }, 0);
 
-  // Componente Cloud exigible en la factura mensual:
-  const cloudCharge = cloudIsDue ? cloudFee : 0;
+  // Componente Cloud:
+  // Si hay mensualidades vencidas, se cobran TODAS las mensualidades vencidas acumuladas.
+  // Si no hay vencidas pero hay una próxima dentro del horizonte (7 días), se cobra 1 ciclo.
+  let cloudCharge = 0;
+  let cloudIsDue = false;
+  let totalCloudCycles = 0;
+
+  if (overdueCycles.length > 0) {
+    totalCloudCycles = overdueCycles.length;
+    cloudCharge = totalCloudCycles * cloudFee;
+    cloudIsDue = true;
+  } else if (upcomingCycles.length > 0) {
+    totalCloudCycles = 1;
+    cloudCharge = cloudFee;
+    cloudIsDue = true;
+  }
+
+  const nextCloudDue = overdueCycles.length > 0
+    ? overdueCycles[0]
+    : (upcomingCycles[0] || firstUnpaidDue);
+
+  let cloudDaysOverdue = 0;
+  let cloudDaysRemaining = 0;
+  if (nextCloudDue) {
+    const diff = diffDays(today, nextCloudDue);
+    cloudDaysRemaining = diff;
+    if (diff < 0) {
+      cloudDaysOverdue = Math.abs(diff);
+    }
+  }
+
+  result.cloudIncluded = cloudIncluded;
+  result.cloudFee = cloudFee;
+  result.nextCloudDue = nextCloudDue;
+  result.cloudIsDue = cloudIsDue;
+  result.cloudDaysRemaining = cloudDaysRemaining;
+  result.cloudDaysOverdue = cloudDaysOverdue;
+  result.cloudCyclesCount = totalCloudCycles;
+  result.overdueCloudCyclesCount = overdueCycles.length;
+
   result.totalInvoiceAmount = result.installmentsAmount + cloudCharge;
 
   // Cálculo de mora estricta (solo lo que ya venció antes o en el día de hoy):
   let maxOverdueDays = 0;
   let overdueAmount = 0;
 
-  if (cloudDaysOverdue > 0) {
-    overdueAmount += cloudFee;
+  if (overdueCycles.length > 0) {
+    overdueAmount += overdueCycles.length * cloudFee;
     if (cloudDaysOverdue > maxOverdueDays) maxOverdueDays = cloudDaysOverdue;
   }
 
@@ -128,7 +219,7 @@ export function computeMonthlyInvoice(
   result.maxDaysOverdue = maxOverdueDays;
   result.isOverdueMoreThan5Days = maxOverdueDays > 5;
 
-  // Resumen textual para banners y diálogos
+  // Resumen textual para banners, modal y comprobantes
   const parts: string[] = [];
   if (relevantPendings.length > 0) {
     const hasAbonos = relevantPendings.some((inst) => (Number(inst.paidAmount) || 0) > 0);
@@ -147,7 +238,11 @@ export function computeMonthlyInvoice(
     }
   }
   if (cloudCharge > 0) {
-    parts.push(`Servicio Cloud ($${cloudCharge.toLocaleString('es-CO')})`);
+    if (totalCloudCycles > 1) {
+      parts.push(`Servicio Cloud (${totalCloudCycles} mensualidades: $${cloudCharge.toLocaleString('es-CO')})`);
+    } else {
+      parts.push(`Servicio Cloud ($${cloudCharge.toLocaleString('es-CO')})`);
+    }
   }
   result.summaryText = parts.length > 0 ? parts.join(' + ') : 'Sin cobros pendientes';
 

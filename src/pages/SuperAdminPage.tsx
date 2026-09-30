@@ -44,9 +44,12 @@ import {
   Wifi,
   WifiOff,
   XCircle,
+  Printer,
+  Scale,
 } from 'lucide-react';
 import type {
   BankAccountInfo,
+  LegalAcceptance,
   NoticeLevel,
   PaymentReport,
   PaymentReportStatus,
@@ -61,7 +64,7 @@ import { useAuth } from '../store/auth';
 import { sha256Hex } from '../lib/crypto';
 import { logAudit } from '../lib/auditLogger';
 import { uid } from '../lib/id';
-import { addDaysStr, cn, formatCOP, formatDateShort, formatDateTime, todayStr } from '../lib/format';
+import { addDaysStr, addMonthsStr, cn, formatCOP, formatDateShort, formatDateTime, todayStr } from '../lib/format';
 import { computeMonthlyInvoice } from '../lib/billingEngine';
 import { PageHeader, StatCard } from '../components/misc';
 import { Badge } from '../components/ui/badge';
@@ -193,8 +196,8 @@ export default function SuperAdminPage() {
 
   const [searchParams, setSearchParams] = useSearchParams();
   const urlTab = searchParams.get('tab');
-  const [activeTab, setActiveTab] = useState<'tenants' | 'banners' | 'reports'>(() => {
-    if (urlTab === 'banners' || urlTab === 'reports') return urlTab;
+  const [activeTab, setActiveTab] = useState<'tenants' | 'banners' | 'reports' | 'legal'>(() => {
+    if (urlTab === 'banners' || urlTab === 'reports' || urlTab === 'legal') return urlTab;
     return 'tenants';
   });
 
@@ -203,6 +206,10 @@ export default function SuperAdminPage() {
     () => (paymentReports ?? []).filter((r) => r.status === 'PENDING').length,
     [paymentReports],
   );
+
+  const legalAcceptances = useLiveQuery(() => db.legal_acceptances.reverse().sortBy('acceptedAt'), []);
+  const [selectedCertificate, setSelectedCertificate] = useState<LegalAcceptance | null>(null);
+  const [legalSearchTenant, setLegalSearchTenant] = useState<string>('');
 
   // Estados para Banners y Cobros
   const [selectedBannerTenantId, setSelectedBannerTenantId] = useState<string>(
@@ -423,7 +430,7 @@ export default function SuperAdminPage() {
 
   useEffect(() => {
     const tabParam = searchParams.get('tab');
-    if (tabParam === 'banners' || tabParam === 'reports' || tabParam === 'tenants') {
+    if (tabParam === 'banners' || tabParam === 'reports' || tabParam === 'tenants' || tabParam === 'legal') {
       setActiveTab(tabParam);
     }
     const tenantParam = searchParams.get('tenantId');
@@ -432,7 +439,7 @@ export default function SuperAdminPage() {
     }
   }, [searchParams]);
 
-  function handleSelectTab(tab: 'tenants' | 'banners' | 'reports') {
+  function handleSelectTab(tab: 'tenants' | 'banners' | 'reports' | 'legal') {
     setActiveTab(tab);
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
@@ -454,6 +461,7 @@ export default function SuperAdminPage() {
   const [bannerLevel, setBannerLevel] = useState<NoticeLevel>('warning');
   const [bannerExpiresAt, setBannerExpiresAt] = useState('');
   const [bannerDismissible, setBannerDismissible] = useState(false);
+  const [bannerDisplayMode, setBannerDisplayMode] = useState<'banner' | 'card_window'>('banner');
   const [paymentPhone, setPaymentPhone] = useState('');
   const [paymentDismissible, setPaymentDismissible] = useState(false);
 
@@ -464,6 +472,7 @@ export default function SuperAdminPage() {
     setBannerLevel(bannerTenant.notice?.level ?? 'warning');
     setBannerExpiresAt(bannerTenant.notice?.expiresAt ?? '');
     setBannerDismissible(bannerTenant.notice?.dismissible ?? false);
+    setBannerDisplayMode(bannerTenant.notice?.displayMode ?? 'banner');
     setPaymentPhone(bannerTenant.paymentWhatsAppPhone ?? '');
     setPaymentDismissible(bannerTenant.paymentBannerDismissible ?? false);
   }, [bannerTenant?.tenantId]);
@@ -965,6 +974,7 @@ export default function SuperAdminPage() {
         level: bannerLevel,
         expiresAt: bannerExpiresAt.trim() || undefined,
         dismissible: bannerDismissible,
+        displayMode: bannerDisplayMode,
         updatedAt: new Date().toISOString(),
         active: true,
       },
@@ -1191,7 +1201,11 @@ export default function SuperAdminPage() {
 
     if (plan && isMonthlyCloudPlan && isPayingFullOrCloud) {
       const currentPaidThrough = plan.cloudPaidThrough || today;
-      const nextMonthDate = addDaysStr(currentPaidThrough < today ? today : currentPaidThrough, 30);
+      const cloudFee = Math.max(1, Number(plan.cloudMonthlyFee) || 1);
+      const monthsCovered = invoice?.cloudCyclesCount && report.amount >= invoice.totalInvoiceAmount
+        ? Math.max(1, invoice.cloudCyclesCount)
+        : Math.max(1, Math.floor(report.amount / cloudFee));
+      const nextMonthDate = addMonthsStr(currentPaidThrough < today ? today : currentPaidThrough, monthsCovered);
       const updatedInstallments = (plan.installments ?? []).map((inst) => {
         if (inst.status === 'PENDING' && (!invoice || report.amount >= invoice.totalInvoiceAmount)) {
           return {
@@ -1299,6 +1313,13 @@ export default function SuperAdminPage() {
       }
     }
 
+    if (tenant?.hasUsedAbonoGrace && remaining > 0) {
+      const confirmOverride = window.confirm(
+        `ADVERTENCIA DE POLÍTICA Y CONTRATO LEGAL (Ley 527/1999):\n\nLa organización «${tenant.name}» ya utilizó previamente su beneficio único de gracia de 15 días concedido en su primer pago.\n\nSegún los términos contractuales firmados, los pagos posteriores deben realizarse en su totalidad (100%) para desbloquear la plataforma. No proceden cuotas parciales.\n\n¿Deseas aplicar una excepción administrativa extraordinaria y otorgar 15 días más?`
+      );
+      if (!confirmOverride) return;
+    }
+
     const updatedReport: PaymentReport = {
       ...report,
       status: 'APPROVED',
@@ -1316,6 +1337,7 @@ export default function SuperAdminPage() {
       const isFullPayment = remaining === 0;
       await saveTenant({
         ...tenant,
+        hasUsedAbonoGrace: true,
         appLocked: isFullPayment ? false : tenant.appLocked,
         unlockedByAdmin: true,
         paymentBannerDeactivated: isFullPayment,
@@ -1342,7 +1364,16 @@ export default function SuperAdminPage() {
               updatedAt: now,
               active: true,
             }
-          : tenant.notice,
+          : {
+              title: 'Aviso de Gracia de Abono (Uso Único)',
+              message:
+                'ADVERTENCIA: Esta prórroga de 15 días concedida tras tu abono aplica por ÚNICA VEZ por ser tu primer pago. Los pagos subsecuentes deben ser cubiertos en su totalidad (100%) y puntualmente en la fecha pactada. No se aceptarán futuros abonos para desbloqueo.',
+              level: 'warning',
+              dismissible: false,
+              displayMode: 'banner',
+              updatedAt: now,
+              active: true,
+            },
         updatedAt: now,
         syncStatus: 'PENDING',
       });
@@ -1746,6 +1777,18 @@ export default function SuperAdminPage() {
               {pendingReportsCount}
             </span>
           )}
+        </button>
+        <button
+          type="button"
+          onClick={() => handleSelectTab('legal')}
+          className={cn(
+            'flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 transition-all cursor-pointer whitespace-nowrap',
+            activeTab === 'legal'
+              ? 'border-emerald-600 text-emerald-700 bg-emerald-50/50 rounded-t-lg'
+              : 'border-transparent text-slate-500 hover:text-slate-800',
+          )}
+        >
+          <Scale size={16} /> Contratos y Legal ({legalAcceptances?.length ?? 0})
         </button>
       </div>
 
@@ -2509,7 +2552,23 @@ export default function SuperAdminPage() {
                     />
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <Label>Modo de Visualización</Label>
+                      <Select
+                        value={bannerDisplayMode}
+                        onChange={(e) => setBannerDisplayMode(e.target.value as 'banner' | 'card_window')}
+                      >
+                        <option value="banner">Cintillo / Banner Superior</option>
+                        <option value="card_window">Ventana Card Modal Flotante</option>
+                      </Select>
+                      <p className="mt-1 text-[11px] text-slate-400">
+                        {bannerDisplayMode === 'card_window'
+                          ? 'Modal flotante en el centro.'
+                          : 'Cintillo con slide si es largo.'}
+                      </p>
+                    </div>
+
                     <div>
                       <Label>Nivel de Severidad</Label>
                       <Select
@@ -2530,7 +2589,7 @@ export default function SuperAdminPage() {
                         onChange={(e) => setBannerExpiresAt(e.target.value)}
                       />
                       <p className="mt-1 text-[11px] text-slate-400">
-                        En blanco = Permanente hasta que lo retires.
+                        En blanco = Permanente.
                       </p>
                     </div>
                   </div>
@@ -2929,6 +2988,206 @@ export default function SuperAdminPage() {
           })()}
         </div>
       )}
+
+      {activeTab === 'legal' && (
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <Scale size={20} className="text-emerald-600" />
+                <h3 className="font-bold text-slate-800 text-lg">Contratos y Validez Legal (Ley 527 de 1999)</h3>
+              </div>
+              <p className="text-xs text-slate-500 mt-1">
+                Registros electrónicos vinculantes de aceptación contractual, telemetría IP y acuerdos de pago bajo la legislación de la República de Colombia. Genera certificados con mérito probatorio judicial.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Input
+                placeholder="Filtrar por organización o usuario..."
+                value={legalSearchTenant}
+                onChange={(e) => setLegalSearchTenant(e.target.value)}
+                className="max-w-xs text-xs"
+              />
+            </div>
+          </div>
+
+          {(() => {
+            const query = legalSearchTenant.trim().toLowerCase();
+            const list = (legalAcceptances ?? []).filter((item) => {
+              if (!query) return true;
+              return (
+                item.tenantName.toLowerCase().includes(query) ||
+                item.userDisplayName.toLowerCase().includes(query) ||
+                item.userName.toLowerCase().includes(query) ||
+                (item.ipAddress && item.ipAddress.toLowerCase().includes(query))
+              );
+            });
+
+            if (list.length === 0) {
+              return (
+                <div className="rounded-2xl border border-dashed border-slate-300 p-12 text-center bg-white">
+                  <Scale size={40} className="mx-auto text-slate-300 mb-2" />
+                  <p className="font-semibold text-slate-600">No se encontraron registros de aceptación legal</p>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Cada vez que un administrador de organización acepte los términos al ingresar, su firma y sello digital quedarán archivados aquí.
+                  </p>
+                </div>
+              );
+            }
+
+            return (
+              <TableWrap>
+                <THead>
+                  <TH>Fecha / Hora Oficial</TH>
+                  <TH>Organización</TH>
+                  <TH>Usuario / Representante</TH>
+                  <TH>Versión Contrato</TH>
+                  <TH>Dirección IP</TH>
+                  <TH>Dispositivo / Navegador</TH>
+                  <TH>Estado</TH>
+                  <TH className="text-right">Certificado Judicial</TH>
+                </THead>
+                <TBody>
+                  {list.map((rec) => (
+                    <TR key={rec.acceptanceId}>
+                      <TD className="text-xs font-mono text-slate-600 whitespace-nowrap">
+                        {formatDateTime(rec.acceptedAt)}
+                      </TD>
+                      <TD className="font-semibold text-slate-900 text-sm">
+                        {rec.tenantName}
+                      </TD>
+                      <TD className="text-xs">
+                        <span className="font-bold text-slate-800">{rec.userDisplayName}</span>
+                        <span className="text-slate-500 block text-[11px] font-mono">@{rec.userName}</span>
+                      </TD>
+                      <TD>
+                        <Badge variant="outline" className="font-mono text-xs border-emerald-300 text-emerald-800 bg-emerald-50">
+                          {rec.contractVersion}
+                        </Badge>
+                      </TD>
+                      <TD className="font-mono text-xs text-slate-700">
+                        {rec.ipAddress || 'No capturada'}
+                      </TD>
+                      <TD className="text-[11px] text-slate-500 max-w-xs truncate" title={rec.userAgent}>
+                        {rec.userAgent}
+                      </TD>
+                      <TD>
+                        <Badge variant="success">VINCULANTE</Badge>
+                      </TD>
+                      <TD className="text-right">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="text-emerald-700 border-emerald-300 hover:bg-emerald-50 text-xs gap-1.5"
+                          onClick={() => setSelectedCertificate(rec)}
+                        >
+                          <Printer size={13} /> Ver / Imprimir Certificado
+                        </Button>
+                      </TD>
+                    </TR>
+                  ))}
+                </TBody>
+              </TableWrap>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* Modal / Certificado Judicial Imprimible */}
+      <Dialog
+        open={selectedCertificate !== null}
+        onClose={() => setSelectedCertificate(null)}
+        title="Certificado de Aceptación Contractual Electrónica"
+        wide
+      >
+        {selectedCertificate && (
+          <div className="space-y-4">
+            <div id="printable-legal-certificate" className="rounded-xl border border-slate-300 bg-white p-6 shadow-sm text-slate-900 font-sans space-y-4 print:p-0 print:border-0 print:shadow-none">
+              <div className="border-b-2 border-emerald-700 pb-3 text-center space-y-1">
+                <span className="text-[11px] font-bold tracking-widest uppercase text-emerald-800">
+                  REPÚBLICA DE COLOMBIA · LEY 527 DE 1999
+                </span>
+                <h2 className="text-base font-black text-slate-900 uppercase">
+                  CERTIFICADO DE ACREDITACIÓN DE CONSENTIMIENTO Y ACUERDO DE PAGO ELECTRÓNICO
+                </h2>
+                <p className="text-xs text-slate-600">
+                  Equivalencia funcional de firma digital y plena validez probatoria (Arts. 6, 7, 8 y 10 Ley 527/1999)
+                </p>
+              </div>
+
+              {/* Ficha Técnica de Telemetría */}
+              <div className="grid grid-cols-2 gap-3 rounded-lg bg-slate-50 border border-slate-200 p-3 text-xs">
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-500 block">ID Firma Digital:</span>
+                  <span className="font-mono font-bold text-slate-800 break-all">{selectedCertificate.acceptanceId}</span>
+                </div>
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-500 block">Sello Cronológico (Timestamp ISO):</span>
+                  <span className="font-mono font-bold text-slate-800">{formatDateTime(selectedCertificate.acceptedAt)}</span>
+                </div>
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-500 block">Organización Licenciataria:</span>
+                  <span className="font-bold text-slate-900">{selectedCertificate.tenantName}</span>
+                </div>
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-500 block">Representante / Aceptante:</span>
+                  <span className="font-bold text-slate-900">{selectedCertificate.userDisplayName} (@{selectedCertificate.userName})</span>
+                </div>
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-500 block">Dirección IP de Captura:</span>
+                  <span className="font-mono text-slate-800">{selectedCertificate.ipAddress || 'Red Privada / Local'}</span>
+                </div>
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-500 block">Versión del Contrato:</span>
+                  <span className="font-mono font-bold text-emerald-700">{selectedCertificate.contractVersion}</span>
+                </div>
+                <div className="col-span-2">
+                  <span className="text-[10px] uppercase font-bold text-slate-500 block">Agente de Usuario (Navegador y Sistema Operativo):</span>
+                  <span className="font-mono text-[11px] text-slate-700 break-words">{selectedCertificate.userAgent}</span>
+                </div>
+              </div>
+
+              {/* Cláusulas Aceptadas */}
+              <div>
+                <h3 className="font-bold text-xs uppercase tracking-wide text-slate-800 border-b pb-1 mb-2">
+                  Contenido Contractual Suscrito Electrónicamente:
+                </h3>
+                <div className="max-h-60 overflow-y-auto rounded bg-slate-50 p-3 text-xs leading-relaxed text-slate-700 border border-slate-200 whitespace-pre-wrap font-serif select-text">
+                  {selectedCertificate.contractText}
+                </div>
+              </div>
+
+              {/* Declaración Probatoria */}
+              <div className="rounded border border-emerald-600/30 bg-emerald-50/50 p-3 text-xs leading-relaxed text-emerald-950">
+                <p className="font-bold text-emerald-900 mb-0.5">DECLARACIÓN PROBATORIA EXPRESA:</p>
+                <p className="text-[11px]">
+                  Se deja constancia fehaciente de que el Cliente aceptó de manera informada e irrevocable las obligaciones pecuniarias del servicio cloud, declarando aplicable la excepción de contrato no cumplido contemplada en el Artículo 1609 del Código Civil de Colombia, según la cual el no pago oportuno faculta a la suspensión de la plataforma sin que haya lugar a indemnizaciones por perjuicios o lucro cesante.
+                </p>
+              </div>
+
+              <div className="flex justify-between items-center text-[10px] text-slate-400 pt-2 border-t">
+                <span>PresMon Software by ChrizDev · Sistema de Gestión Crediticia</span>
+                <span>Firma electrónica registrada con respaldo criptográfico</span>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setSelectedCertificate(null)}>
+                Cerrar
+              </Button>
+              <Button
+                onClick={() => {
+                  window.print();
+                }}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white gap-2"
+              >
+                <Printer size={15} /> Imprimir Certificado Judicial
+              </Button>
+            </div>
+          </div>
+        )}
+      </Dialog>
 
       <Dialog open={createOpen} onClose={() => setCreateOpen(false)} title="Nueva organización">
         <form onSubmit={handleCreateTenant} className="space-y-3">

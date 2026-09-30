@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlertTriangle, CloudOff, LogIn, RefreshCw, ShieldCheck } from 'lucide-react';
-import { useAuth } from '../store/auth';
+import { useAuth, type Session } from '../store/auth';
 import { db } from '../db/db';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import { Input, Label } from '../components/ui/input';
 import { cn } from '../lib/format';
 import { isSyncConfigured, pullBootstrap } from '../lib/sync/syncEngine';
+import { CURRENT_CONTRACT_VERSION } from '../lib/legalContract';
+import { LegalContractModal } from '../components/LegalContractModal';
 
 type BootState = 'checking' | 'local' | 'syncing' | 'empty-cloud' | 'ready';
 
@@ -21,6 +23,7 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [boot, setBoot] = useState<BootState>('checking');
   const [concurrentAlert, setConcurrentAlert] = useState(false);
+  const [pendingLegalSession, setPendingLegalSession] = useState<Session | null>(null);
   const cloudMode = isSyncConfigured();
 
   useEffect(() => {
@@ -54,13 +57,37 @@ export default function LoginPage() {
     })();
   }, [cloudMode, bootstrap]);
 
+  async function checkLegalAndProceed() {
+    const rawSession = localStorage.getItem('presmon_session');
+    if (rawSession) {
+      try {
+        const sess = JSON.parse(rawSession) as Session;
+        if (sess.role === 'TENANT_ADMIN' && sess.tenantId) {
+          const accepted = await db.legal_acceptances
+            .where('tenantId')
+            .equals(sess.tenantId)
+            .filter((a) => a.contractVersion === CURRENT_CONTRACT_VERSION && a.status === 'ACTIVE')
+            .first();
+
+          if (!accepted) {
+            setPendingLegalSession(sess);
+            return;
+          }
+        }
+      } catch {
+        /* noop */
+      }
+    }
+    navigate('/', { replace: true });
+  }
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError('');
     setLoading(true);
     try {
       await login(username, password);
-      navigate('/', { replace: true });
+      await checkLegalAndProceed();
     } catch (err) {
       let message = err instanceof Error ? err.message : 'Error al iniciar sesión';
       if (
@@ -73,7 +100,7 @@ export default function LoginPage() {
         try {
           await pullBootstrap();
           await login(username, password);
-          navigate('/', { replace: true });
+          await checkLegalAndProceed();
           return;
         } catch (retryErr) {
           message = retryErr instanceof Error ? retryErr.message : message;
@@ -198,6 +225,20 @@ export default function LoginPage() {
       <p className="absolute bottom-4 text-[10px] text-slate-700">
         PresMon v1.2 · Tus datos se respaldan en la nube y en este dispositivo
       </p>
+
+      {pendingLegalSession && (
+        <LegalContractModal
+          tenantId={pendingLegalSession.tenantId}
+          tenantName={pendingLegalSession.tenantName}
+          userId={pendingLegalSession.userId}
+          userName={pendingLegalSession.username}
+          userDisplayName={pendingLegalSession.displayName}
+          onAccepted={() => {
+            setPendingLegalSession(null);
+            navigate('/', { replace: true });
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -13,6 +13,7 @@ const SYNCED_COLLECTIONS = [
   'plans',
   'loan_requests',
   'payment_reports',
+  'legal_acceptances',
 ] as const;
 
 type SyncedCollection = (typeof SYNCED_COLLECTIONS)[number];
@@ -41,6 +42,7 @@ function idKeyOf(collection: SyncedCollection): string {
   if (collection === 'audit_logs') return 'logId';
   if (collection === 'loan_requests') return 'requestId';
   if (collection === 'payment_reports') return 'reportId';
+  if (collection === 'legal_acceptances') return 'acceptanceId';
   return collection.slice(0, -1) + 'Id';
 }
 
