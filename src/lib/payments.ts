@@ -55,13 +55,17 @@ export async function applyPaymentToLoan(
       const pay = Math.min(remaining, pendingOfInst);
       inst.amountPaid = round2(inst.amountPaid + pay);
       remaining = round2(remaining - pay);
+      const now = nowISO();
       if (inst.amountPaid >= dueNow - 0.01) {
         inst.status = 'PAID';
-        inst.paidAt = nowISO();
+        inst.paidAt = now;
       } else {
         inst.status = 'PARTIAL';
-        inst.paidAt = null;
       }
+      inst.paidCollectorName = actor.name;
+      inst.paidCollectorId = actor.id;
+      inst.paidCollectorRole = String(extraPayload?.rol || (actionOverride === 'SOCIO_PAYMENT_APPLIED' ? 'SOCIO' : 'ADMIN'));
+      inst.lastPaymentAt = now;
       updated.push(inst);
     }
 

@@ -410,6 +410,14 @@ export interface Installment extends BaseRecord {
   amountPaid: number;
   status: InstallmentStatus;
   paidAt: string | null;
+  /** Nombre del socio o usuario que recaudó el pago/abono */
+  paidCollectorName?: string;
+  /** ID del socio o usuario que recaudó el pago */
+  paidCollectorId?: string;
+  /** Rol del cobrador ('SOCIO' | 'TENANT_ADMIN' | 'ADMIN') */
+  paidCollectorRole?: string;
+  /** Fecha/hora ISO del último pago o abono recibido */
+  lastPaymentAt?: string;
 }
 
 export interface AuditLog extends BaseRecord {

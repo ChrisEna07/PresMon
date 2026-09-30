@@ -4,11 +4,13 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import {
   CalendarClock,
   CheckCircle2,
+  Clock,
   HandCoins,
   MapPin,
   MessageCircle,
   Phone,
   Plus,
+  Receipt,
   RefreshCw,
   Search,
   ShieldAlert,
@@ -19,7 +21,7 @@ import {
   WifiOff,
   X,
 } from 'lucide-react';
-import type { Borrower, Installment, Loan, SingleUseSocioToken, Tenant } from '../db/models';
+import type { AuditLog, Borrower, Installment, Loan, SingleUseSocioToken, Tenant } from '../db/models';
 import { db, nowISO, stamp } from '../db/db';
 import { useAuth, getOrCreateDeviceId } from '../store/auth';
 import { applyPaymentToLoan } from '../lib/payments';
@@ -66,7 +68,7 @@ export default function SocioPage() {
   >(urlToken ? 'validating' : activeSession ? 'ready' : 'unlinked');
   const [errorMessage, setErrorMessage] = useState('');
   const [syncing, setSyncing] = useState(false);
-  const [activeTab, setActiveTab] = useState<'route' | 'borrowers' | 'new-borrower'>('route');
+  const [activeTab, setActiveTab] = useState<'route' | 'history' | 'borrowers' | 'new-borrower'>('route');
   const [searchQuery, setSearchQuery] = useState('');
 
   // Identificación del Socio
@@ -155,6 +157,64 @@ export default function SocioPage() {
     (loans ?? []).forEach((l) => map.set(l.loanId, l));
     return map;
   }, [loans]);
+
+  const socioAuditLogs = useLiveQuery(
+    async (): Promise<AuditLog[]> => {
+      if (!effectiveTenantId) return [];
+      return await db.audit_logs
+        .where('tenantId')
+        .equals(effectiveTenantId)
+        .toArray();
+    },
+    [effectiveTenantId],
+  );
+
+  const todayStrVal = todayStr();
+  const todayCollections = useMemo(() => {
+    const list: Array<{
+      id: string;
+      borrowerName: string;
+      borrowerPhone: string;
+      amount: number;
+      method: string;
+      time: string;
+      collectorName: string;
+      isMine: boolean;
+      loanId: string;
+    }> = [];
+
+    (socioAuditLogs ?? []).forEach((log) => {
+      if (log.action !== 'SOCIO_PAYMENT_APPLIED' && log.action !== 'PAYMENT_APPLIED') return;
+      const logDate = (log.timestamp || log.createdAt || '').slice(0, 10);
+      if (logDate !== todayStrVal) return;
+
+      let payload: any = {};
+      try {
+        payload = typeof log.payloadSnapshot === 'string' ? JSON.parse(log.payloadSnapshot) : (log.payloadSnapshot || {});
+      } catch {
+        payload = {};
+      }
+
+      const collector = String(payload.recaudadoPor || log.actorName || 'Socio');
+      const isMine = activeSession ? collector.toLowerCase().includes(activeSession.socioName.toLowerCase()) : true;
+      const loan = loanMap.get(log.entityId);
+      const borrower = loan ? borrowerMap.get(loan.borrowerId) : undefined;
+
+      list.push({
+        id: log.logId,
+        borrowerName: borrower?.fullName || 'Cliente',
+        borrowerPhone: borrower?.phone || '',
+        amount: Number(payload.montoAplicado) || 0,
+        method: String(payload.metodoPago || 'Efectivo'),
+        time: (log.timestamp || log.createdAt || '').slice(11, 16),
+        collectorName: collector,
+        isMine,
+        loanId: log.entityId,
+      });
+    });
+
+    return list.sort((a, b) => b.time.localeCompare(a.time));
+  }, [socioAuditLogs, todayStrVal, activeSession, loanMap, borrowerMap]);
 
   // Canje del enlace de único uso (Single-Use Token)
   useEffect(() => {
@@ -480,6 +540,7 @@ export default function SocioPage() {
           notas: paymentNotes.trim(),
           recaudadoPor: socioActor.name,
           modalidad: collectMode,
+          rol: 'SOCIO',
         },
       );
 
@@ -795,22 +856,33 @@ export default function SocioPage() {
       </div>
 
       {/* Pestañas de navegación del socio */}
-      <div className="flex border-b border-slate-800 bg-slate-900/80 px-4 pt-1 max-w-lg mx-auto w-full">
+      <div className="flex border-b border-slate-800 bg-slate-900/80 px-2 sm:px-4 pt-1 max-w-lg mx-auto w-full overflow-x-auto">
         <button
           onClick={() => setActiveTab('route')}
           className={cn(
-            'flex-1 py-2 text-xs font-bold border-b-2 flex items-center justify-center gap-1.5 transition-colors cursor-pointer',
+            'flex-1 py-2 text-xs font-bold border-b-2 flex items-center justify-center gap-1.5 transition-colors cursor-pointer shrink-0 px-2 whitespace-nowrap',
             activeTab === 'route'
               ? 'border-emerald-500 text-emerald-400'
               : 'border-transparent text-slate-400 hover:text-slate-200',
           )}
         >
-          <CalendarClock size={15} /> Ruta de Cobro
+          <CalendarClock size={15} /> Ruta
+        </button>
+        <button
+          onClick={() => setActiveTab('history')}
+          className={cn(
+            'flex-1 py-2 text-xs font-bold border-b-2 flex items-center justify-center gap-1.5 transition-colors cursor-pointer shrink-0 px-2 whitespace-nowrap',
+            activeTab === 'history'
+              ? 'border-emerald-500 text-emerald-400'
+              : 'border-transparent text-slate-400 hover:text-slate-200',
+          )}
+        >
+          <Receipt size={15} /> Cobros Hoy ({todayCollections.length})
         </button>
         <button
           onClick={() => setActiveTab('borrowers')}
           className={cn(
-            'flex-1 py-2 text-xs font-bold border-b-2 flex items-center justify-center gap-1.5 transition-colors cursor-pointer',
+            'flex-1 py-2 text-xs font-bold border-b-2 flex items-center justify-center gap-1.5 transition-colors cursor-pointer shrink-0 px-2 whitespace-nowrap',
             activeTab === 'borrowers'
               ? 'border-emerald-500 text-emerald-400'
               : 'border-transparent text-slate-400 hover:text-slate-200',
@@ -821,13 +893,13 @@ export default function SocioPage() {
         <button
           onClick={() => setActiveTab('new-borrower')}
           className={cn(
-            'flex-1 py-2 text-xs font-bold border-b-2 flex items-center justify-center gap-1.5 transition-colors cursor-pointer',
+            'flex-1 py-2 text-xs font-bold border-b-2 flex items-center justify-center gap-1.5 transition-colors cursor-pointer shrink-0 px-2 whitespace-nowrap',
             activeTab === 'new-borrower'
               ? 'border-emerald-500 text-emerald-400'
               : 'border-transparent text-slate-400 hover:text-slate-200',
           )}
         >
-          <UserPlus size={15} /> Nuevo Cliente
+          <UserPlus size={15} /> Nuevo
         </button>
       </div>
 
@@ -907,9 +979,14 @@ export default function SocioPage() {
                             {formatCOP(remaining)}
                           </p>
                           {inst.amountPaid > 0 && (
-                            <p className="text-[10px] text-slate-400">
-                              Abonado: {formatCOP(inst.amountPaid)}
-                            </p>
+                            <div className="text-[10px] text-slate-400">
+                              <p>Abonado: {formatCOP(inst.amountPaid)}</p>
+                              {inst.paidCollectorName && (
+                                <p className="text-emerald-400 font-medium truncate max-w-[140px]" title={`Cobrado por: ${inst.paidCollectorName}`}>
+                                  👤 {inst.paidCollectorName}
+                                </p>
+                              )}
+                            </div>
                           )}
                         </div>
                       </div>
@@ -986,6 +1063,89 @@ export default function SocioPage() {
                     </div>
                   );
                 })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* PESTAÑA HISTORIAL: COBROS DE HOY */}
+        {activeTab === 'history' && (
+          <div className="space-y-3">
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/90 p-3.5 flex items-center justify-between">
+              <div>
+                <p className="text-[11px] font-medium text-slate-400">Total Recaudado Hoy</p>
+                <p className="text-xl font-black text-emerald-400">
+                  {formatCOP(todayCollections.reduce((sum, c) => sum + c.amount, 0))}
+                </p>
+              </div>
+              <div className="text-right">
+                <span className="inline-block rounded-full bg-emerald-500/10 px-2.5 py-1 text-[11px] font-bold text-emerald-400">
+                  {todayCollections.length} cobro(s)
+                </span>
+                <p className="text-[10px] text-slate-500 mt-1">Registrados en la fecha</p>
+              </div>
+            </div>
+
+            {todayCollections.length === 0 ? (
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-8 text-center text-slate-400 space-y-2">
+                <Clock size={36} className="text-slate-600 mx-auto" />
+                <p className="font-bold text-sm text-white">Sin cobros registrados hoy</p>
+                <p className="text-xs">Los cobros que apliques hoy aparecerán aquí con su comprobante disponible.</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {todayCollections.map((col) => (
+                  <div
+                    key={col.id}
+                    className="rounded-xl border border-slate-800 bg-slate-900 p-3 flex items-center justify-between gap-3 shadow-2xs"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <p className="font-bold text-xs text-white truncate">{col.borrowerName}</p>
+                        <span className="text-[10px] text-slate-400 font-mono">🕒 {col.time}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                        <span className="text-[10px] text-slate-400 font-medium">
+                          👤 {col.collectorName}
+                        </span>
+                        <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[9px] font-semibold text-slate-400 border border-slate-700">
+                          {col.method}
+                        </span>
+                        {col.isMine && (
+                          <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-bold text-emerald-400 border border-emerald-500/20">
+                            Cobrado por ti
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="text-right shrink-0 flex flex-col items-end gap-1">
+                      <p className="text-xs font-black text-emerald-400">
+                        {formatCOP(col.amount)}
+                      </p>
+                      {col.borrowerPhone && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const phone = col.borrowerPhone.replace(/\D/g, '');
+                            const cleanPhone = phone.startsWith('57') ? phone : `57${phone}`;
+                            const msg = `*COMPROBANTE DE PAGO · PRESMON*\n\nHola *${col.borrowerName}*, te confirmamos el recibo de tu pago:\n\n` +
+                              `• *Valor Recibido:* ${formatCOP(col.amount)}\n` +
+                              `• *Método:* ${col.method}\n` +
+                              `• *Fecha:* ${formatDateShort(todayStrVal)} ${col.time}\n` +
+                              `• *Atendido por:* ${col.collectorName}\n\n` +
+                              `¡Gracias por tu pago puntual!`;
+                            window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`, '_blank');
+                          }}
+                          className="rounded-lg bg-emerald-950/60 text-emerald-400 px-2 py-1 text-[10px] font-bold hover:bg-emerald-900/60 flex items-center gap-1 cursor-pointer transition-colors"
+                          title="Reenviar comprobante por WhatsApp"
+                        >
+                          <MessageCircle size={11} /> Reenviar Recibo
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>

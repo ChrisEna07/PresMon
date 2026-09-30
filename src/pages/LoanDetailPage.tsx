@@ -1,17 +1,20 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
   AlertTriangle,
   ArrowLeft,
   Ban,
+  Clock,
   FileDown,
   HandCoins,
   Mail,
   MessageCircle,
   Package,
+  Receipt,
+  UserCheck,
 } from 'lucide-react';
-import type { Borrower, Installment, Loan, LoanRequest } from '../db/models';
+import type { AuditLog, Borrower, Installment, Loan, LoanRequest } from '../db/models';
 import { db, savePdfBlob } from '../db/db';
 import { useAuth } from '../store/auth';
 import { applyPaymentToLoan } from '../lib/payments';
@@ -19,7 +22,7 @@ import { generateContractPDF } from '../lib/generateContractPDF';
 import { downloadBlob } from '../lib/crypto';
 import { logAudit } from '../lib/auditLogger';
 import { DOCUMENT_TYPE_LABELS, FREQUENCY_LABELS, computeSchedule } from '../lib/financialCalculations';
-import { formatCOP, formatDateShort } from '../lib/format';
+import { cn, formatCOP, formatDateShort, formatDateTime } from '../lib/format';
 import { openWhatsApp } from '../lib/share';
 import { PageHeader, StatCard } from '../components/misc';
 import { Badge } from '../components/ui/badge';
@@ -165,6 +168,74 @@ export default function LoanDetailPage() {
         : Promise.resolve(undefined),
     [loan?.guaranteeRequestId],
   );
+
+  const loanAudits = useLiveQuery<AuditLog[]>(
+    () =>
+      id
+        ? db.audit_logs
+            .where('entityId')
+            .equals(id)
+            .toArray()
+        : Promise.resolve([]),
+    [id],
+  );
+
+  const paymentHistory = useMemo(() => {
+    const list: Array<{
+      id: string;
+      timestamp: string;
+      collectorName: string;
+      isSocio: boolean;
+      amount: number;
+      method: string;
+      notes: string;
+    }> = [];
+
+    (loanAudits ?? []).forEach((log) => {
+      if (log.action !== 'PAYMENT_APPLIED' && log.action !== 'SOCIO_PAYMENT_APPLIED') return;
+      let payload: Record<string, unknown> = {};
+      try {
+        payload = typeof log.payloadSnapshot === 'string' ? JSON.parse(log.payloadSnapshot) : (log.payloadSnapshot || {});
+      } catch {
+        payload = {};
+      }
+      const isSocio = log.action === 'SOCIO_PAYMENT_APPLIED' || Boolean(payload.recaudadoPor);
+      const collectorName = String(payload.recaudadoPor || log.actorName || (isSocio ? 'Socio Cobrador' : 'Oficina / Admin'));
+      list.push({
+        id: log.logId,
+        timestamp: log.timestamp || log.createdAt,
+        collectorName,
+        isSocio,
+        amount: Number(payload.montoAplicado) || 0,
+        method: String(payload.metodoPago || 'Efectivo'),
+        notes: String(payload.notas || ''),
+      });
+    });
+
+    return list.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  }, [loanAudits]);
+
+  const getInstallmentPaymentDetails = (inst: Installment) => {
+    if (inst.paidCollectorName) {
+      return {
+        collectorName: inst.paidCollectorName,
+        date: inst.paidAt || inst.lastPaymentAt,
+        isSocio: inst.paidCollectorRole === 'SOCIO',
+      };
+    }
+    // Fallback retroactivo si tiene pagos pero no tenía el campo grabado
+    if (inst.amountPaid > 0 && paymentHistory.length > 0) {
+      const log = paymentHistory[paymentHistory.length - 1];
+      if (log) {
+        return {
+          collectorName: log.collectorName,
+          date: inst.paidAt || log.timestamp,
+          isSocio: log.isSocio,
+        };
+      }
+    }
+    return null;
+  };
 
   if (!loan) {
     return (
@@ -447,31 +518,118 @@ export default function LoanDetailPage() {
                 {formatCOP(i.totalAmountWithLateFee)}
               </TD>
               <TD className="text-right text-emerald-700">{formatCOP(i.amountPaid)}</TD>
-              <TD>
-                <Badge
-                  variant={
-                    i.status === 'PAID'
-                      ? 'success'
+              <TD className="align-top">
+                <div className="flex flex-col gap-1 items-start">
+                  <Badge
+                    variant={
+                      i.status === 'PAID'
+                        ? 'success'
+                        : i.status === 'OVERDUE'
+                          ? 'danger'
+                          : i.status === 'PARTIAL'
+                            ? 'warning'
+                            : 'outline'
+                    }
+                  >
+                    {i.status === 'PAID'
+                      ? 'Pagada'
                       : i.status === 'OVERDUE'
-                        ? 'danger'
+                        ? 'Vencida'
                         : i.status === 'PARTIAL'
-                          ? 'warning'
-                          : 'outline'
-                  }
-                >
-                  {i.status === 'PAID'
-                    ? 'Pagada'
-                    : i.status === 'OVERDUE'
-                      ? 'Vencida'
-                      : i.status === 'PARTIAL'
-                        ? 'Parcial'
-                        : 'Pendiente'}
-                </Badge>
+                          ? 'Parcial'
+                          : 'Pendiente'}
+                  </Badge>
+                  {(() => {
+                    const info = getInstallmentPaymentDetails(i);
+                    if (!info && i.status !== 'PAID' && i.amountPaid <= 0) return null;
+                    return (
+                      <div className="mt-1 flex flex-col gap-0.5 text-[10px] text-slate-500 bg-slate-50 p-1.5 rounded-md border border-slate-100 max-w-[170px]">
+                        {info?.date && (
+                          <span className="font-semibold text-slate-700 flex items-center gap-1">
+                            <Clock size={10} className="text-slate-400 shrink-0" />
+                            {formatDateTime(info.date)}
+                          </span>
+                        )}
+                        <span
+                          className="font-bold text-emerald-800 flex items-center gap-1 truncate"
+                          title={info?.collectorName ? `Recaudado por: ${info.collectorName}` : 'Recaudado'}
+                        >
+                          <UserCheck size={11} className={cn('shrink-0', info?.isSocio ? 'text-sky-600' : 'text-emerald-600')} />
+                          {info?.collectorName ? (
+                            <span>{info.isSocio ? `Socio: ${info.collectorName}` : info.collectorName}</span>
+                          ) : (
+                            <span>Recaudado</span>
+                          )}
+                        </span>
+                      </div>
+                    );
+                  })()}
+                </div>
               </TD>
             </TR>
           ))}
         </TBody>
       </TableWrap>
+
+      {/* Historial de Recaudos y Abonos Registrados */}
+      <div className="mt-8 space-y-3">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <Receipt size={17} className="text-emerald-600" />
+            <h2 className="font-bold text-slate-800 text-sm">
+              Historial de Recaudos y Abonos Recibidos
+            </h2>
+          </div>
+          <Badge variant="muted" className="text-[10px] font-bold">
+            {paymentHistory.length} transacciones registradas
+          </Badge>
+        </div>
+
+        {paymentHistory.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/60 p-6 text-center text-xs text-slate-400">
+            Aún no se han registrado abonos o pagos en este préstamo.
+          </div>
+        ) : (
+          <TableWrap>
+            <THead>
+              <TH>Fecha y Hora</TH>
+              <TH className="text-right">Monto Recaudado</TH>
+              <TH>Recaudado Por</TH>
+              <TH>Método</TH>
+              <TH>Notas / Concepto</TH>
+            </THead>
+            <TBody>
+              {paymentHistory.map((p) => (
+                <TR key={p.id}>
+                  <TD className="text-xs font-mono text-slate-600">
+                    {formatDateTime(p.timestamp)}
+                  </TD>
+                  <TD className="text-right font-black text-emerald-700 text-xs">
+                    {formatCOP(p.amount)}
+                  </TD>
+                  <TD>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <UserCheck size={13} className={p.isSocio ? 'text-sky-600' : 'text-emerald-600'} />
+                      <span className="text-xs font-bold text-slate-800">{p.collectorName}</span>
+                      <Badge variant={p.isSocio ? 'info' : 'success'} className="text-[9px] py-0 px-1 font-bold">
+                        {p.isSocio ? 'Socio' : 'Oficina'}
+                      </Badge>
+                    </div>
+                  </TD>
+                  <TD className="text-xs text-slate-600">
+                    <span className="inline-block rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700">
+                      {p.method}
+                    </span>
+                  </TD>
+                  <TD className="text-xs text-slate-500">
+                    {p.notes || '—'}
+                  </TD>
+                </TR>
+              ))}
+            </TBody>
+          </TableWrap>
+        )}
+      </div>
 
       <PaymentDialog open={payOpen} onClose={() => setPayOpen(false)} loan={loan} />
 

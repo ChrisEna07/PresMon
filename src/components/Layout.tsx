@@ -1117,7 +1117,7 @@ export default function Layout() {
         {showNotice && activeNotice && activeNotice.displayMode !== 'card_window' && (
           <div
             className={cn(
-              'px-4 py-2.5 text-sm transition-all shadow-sm',
+              'px-3 sm:px-4 py-2 sm:py-2.5 text-xs sm:text-sm transition-all shadow-sm',
               activeNotice.level === 'danger'
                 ? 'bg-red-600 text-white'
                 : activeNotice.level === 'warning'
@@ -1125,31 +1125,30 @@ export default function Layout() {
                   : 'bg-sky-100 text-sky-950 border-b border-sky-200',
             )}
           >
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2 overflow-hidden flex-1 min-w-0">
-                <Megaphone size={16} className="shrink-0" />
-                <span className="font-semibold shrink-0">
-                  {activeNotice.title?.trim() ? activeNotice.title : 'Aviso de ChrizDev:'}
-                </span>
-
-                {activeNotice.message.length > 90 && !isNoticeExpanded ? (
-                  <div className="flex-1 overflow-hidden relative">
-                    <span className="truncate block">
-                      {activeNotice.message}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-start sm:items-center gap-2 flex-1 min-w-0">
+                <Megaphone size={16} className="shrink-0 mt-0.5 sm:mt-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="font-bold shrink-0">
+                      {activeNotice.title?.trim() ? activeNotice.title : 'Aviso:'}
                     </span>
+                    {!isNoticeExpanded && (
+                      <span className="text-xs sm:text-sm break-words leading-snug">
+                        {activeNotice.message.length > 120
+                          ? `${activeNotice.message.slice(0, 117)}…`
+                          : activeNotice.message}
+                      </span>
+                    )}
                   </div>
-                ) : (
-                  <span className={cn('text-sm', isNoticeExpanded ? 'break-words' : 'truncate')}>
-                    {activeNotice.message}
-                  </span>
-                )}
+                </div>
               </div>
 
-              <div className="flex items-center gap-2 shrink-0">
-                {activeNotice.message.length > 90 && (
+              <div className="flex items-center justify-end gap-2 shrink-0 self-end sm:self-center">
+                {activeNotice.message.length > 120 && (
                   <button
                     onClick={() => setIsNoticeExpanded((prev) => !prev)}
-                    className="cursor-pointer rounded px-2 py-0.5 text-xs font-semibold underline underline-offset-2 opacity-80 hover:opacity-100 transition-opacity"
+                    className="cursor-pointer rounded px-2 py-0.5 text-xs font-bold underline underline-offset-2 opacity-90 hover:opacity-100 transition-opacity"
                   >
                     {isNoticeExpanded ? 'Ver menos' : 'Ver mensaje completo'}
                   </button>
@@ -1157,7 +1156,7 @@ export default function Layout() {
                 {isNoticeDismissible && (
                   <button
                     onClick={() => setNoticeDismissedAt(activeNotice.updatedAt)}
-                    className="cursor-pointer rounded p-1 opacity-70 hover:opacity-100 transition-opacity"
+                    className="cursor-pointer rounded p-1 opacity-80 hover:opacity-100 transition-opacity"
                     aria-label="Ocultar aviso"
                   >
                     <X size={15} />
@@ -1166,8 +1165,8 @@ export default function Layout() {
               </div>
             </div>
 
-            {isNoticeExpanded && activeNotice.message.length > 90 && (
-              <div className="mt-2 pt-2 border-t border-current/15 text-xs sm:text-sm leading-relaxed whitespace-pre-wrap">
+            {isNoticeExpanded && (
+              <div className="mt-2 pt-2 border-t border-current/20 text-xs sm:text-sm leading-relaxed break-words whitespace-pre-wrap">
                 {activeNotice.message}
               </div>
             )}

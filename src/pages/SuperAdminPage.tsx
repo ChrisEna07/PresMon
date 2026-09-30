@@ -350,6 +350,7 @@ export default function SuperAdminPage() {
 
   const [analyticsViewOpen, setAnalyticsViewOpen] = useState(true);
   const [showOrgPortfolio, setShowOrgPortfolio] = useState(false);
+  const [selectedPortfolioOrgId, setSelectedPortfolioOrgId] = useState<string>('ALL');
 
   const globalMetrics = useMemo(() => {
     const activeTenantsList = (tenants ?? []).filter((t) => t.status !== 'DELETED');
@@ -494,6 +495,79 @@ export default function SuperAdminPage() {
       tenantsWithDebtList,
     };
   }, [tenants, planByTenant, loans, installments, auditLogs, borrowers]);
+
+  const portfolioMetrics = useMemo(() => {
+    const activeTenantsList = (tenants ?? []).filter((t) => t.status !== 'DELETED');
+    const tenantIdsSet = new Set(activeTenantsList.map((t) => t.tenantId));
+
+    // Filtrar préstamos según la organización seleccionada ('ALL' o tenantId específico)
+    const targetLoans = (loans ?? []).filter((l) => {
+      if (l.status === 'CANCELLED') return false;
+      if (!tenantIdsSet.has(l.tenantId)) return false;
+      if (selectedPortfolioOrgId !== 'ALL' && l.tenantId !== selectedPortfolioOrgId) return false;
+      return true;
+    });
+
+    const targetLoanIds = new Set(targetLoans.map((l) => l.loanId));
+    const targetInstallments = (installments ?? []).filter((i) => targetLoanIds.has(i.loanId));
+
+    // 1. Capital colocado (prestado)
+    const totalPrincipalPlaced = targetLoans.reduce((sum, l) => sum + (Number(l.principalAmount) || 0), 0);
+
+    // 2. Tasa promedio de colocación
+    const avgInterestRate = targetLoans.length > 0
+      ? targetLoans.reduce((sum, l) => sum + (Number(l.interestRatePercent) || 0), 0) / targetLoans.length
+      : 0;
+
+    let minRate = targetLoans.length > 0 ? Number(targetLoans[0].interestRatePercent) || 0 : 0;
+    let maxRate = minRate;
+    targetLoans.forEach((l) => {
+      const r = Number(l.interestRatePercent) || 0;
+      if (r < minRate) minRate = r;
+      if (r > maxRate) maxRate = r;
+    });
+
+    // 3. Ganancias fijas (ya pagadas) y Ganancia esperada (por pagar)
+    let fixedEarningsPaid = 0;
+    let totalContractInterest = 0;
+    let principalPaid = 0;
+
+    targetInstallments.forEach((inst) => {
+      const instInterest = Number(inst.interestAmount) || 0;
+      const instPrincipal = Number(inst.principalAmount) || 0;
+      const instBase = Number(inst.baseAmountDue) || (instInterest + instPrincipal);
+      const paid = Number(inst.amountPaid) || 0;
+
+      totalContractInterest += instInterest;
+
+      if (inst.status === 'PAID') {
+        fixedEarningsPaid += instInterest;
+        principalPaid += instPrincipal;
+      } else if (paid > 0 && instBase > 0) {
+        const ratio = Math.min(1, paid / instBase);
+        fixedEarningsPaid += instInterest * ratio;
+        principalPaid += instPrincipal * ratio;
+      }
+    });
+
+    const expectedEarningsPending = Math.max(0, totalContractInterest - fixedEarningsPaid);
+    const principalPending = Math.max(0, totalPrincipalPlaced - principalPaid);
+    const uniqueBorrowersCount = new Set(targetLoans.map((l) => l.borrowerId)).size;
+
+    return {
+      totalPrincipalPlaced: Math.round(totalPrincipalPlaced),
+      avgInterestRate: Number(avgInterestRate.toFixed(1)),
+      minRate,
+      maxRate,
+      fixedEarningsPaid: Math.round(fixedEarningsPaid),
+      expectedEarningsPending: Math.round(expectedEarningsPending),
+      totalContractInterest: Math.round(totalContractInterest),
+      principalPaid: Math.round(principalPaid),
+      principalPending: Math.round(principalPending),
+      loansCount: targetLoans.length,
+      borrowersCount: uniqueBorrowersCount,
+    };
+  }, [loans, installments, tenants, selectedPortfolioOrgId]);
 
   useEffect(() => {
     const tabParam = searchParams.get('tab');
@@ -1911,20 +1985,34 @@ export default function SuperAdminPage() {
                   </p>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <Button
+                  variant={!showOrgPortfolio ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setShowOrgPortfolio(false)}
+                  className={cn(
+                    'text-xs gap-1.5 h-8 cursor-pointer transition-colors',
+                    !showOrgPortfolio
+                      ? 'bg-slate-900 hover:bg-slate-800 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900 border-slate-300'
+                  )}
+                  title="Ver solo las finanzas y métricas de la plataforma PresMon como desarrollador"
+                >
+                  <Activity size={13} /> Estadísticas SaaS (Desarrollador)
+                </Button>
                 <Button
                   variant={showOrgPortfolio ? 'default' : 'outline'}
                   size="sm"
-                  onClick={() => setShowOrgPortfolio(!showOrgPortfolio)}
+                  onClick={() => setShowOrgPortfolio(true)}
                   className={cn(
                     'text-xs gap-1.5 h-8 cursor-pointer transition-colors',
                     showOrgPortfolio
-                      ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                      ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs'
                       : 'text-slate-600 hover:text-slate-900 border-slate-300'
                   )}
-                  title="Alternar vista entre finanzas de la plataforma PresMon y cartera operativa de créditos de las organizaciones"
+                  title="Ver analítica de préstamos colocados, porcentaje de interés y ganancias de las organizaciones"
                 >
-                  <TrendingUp size={13} /> {showOrgPortfolio ? 'Ver Solo SaaS PresMon' : 'Ver Cartera Organizaciones'}
+                  <TrendingUp size={13} /> Analítica de Préstamos
                 </Button>
                 <Button
                   variant="outline"
@@ -1932,7 +2020,7 @@ export default function SuperAdminPage() {
                   onClick={() => setAnalyticsViewOpen(!analyticsViewOpen)}
                   className="text-xs gap-1.5 h-8 text-slate-600 hover:text-slate-900 border-slate-300 cursor-pointer"
                 >
-                  <BarChart3 size={13} /> {analyticsViewOpen ? 'Ocultar Analítica' : 'Ver Analítica Completa'}
+                  <BarChart3 size={13} /> {analyticsViewOpen ? 'Ocultar Rankings' : 'Ver Rankings'}
                   <ChevronDown size={13} className={cn('transition-transform duration-200', analyticsViewOpen ? 'rotate-180' : '')} />
                 </Button>
               </div>
@@ -1990,42 +2078,133 @@ export default function SuperAdminPage() {
               </div>
             </div>
 
-            {/* Vista Especial: Cartera Operativa de las Organizaciones (Solo si el Super Admin lo activa) */}
+            {/* Vista Especial: Cartera y Analítica de Préstamos de las Organizaciones */}
             {showOrgPortfolio && (
-              <div className="rounded-xl border border-indigo-200 bg-indigo-50/50 p-4 shadow-2xs space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <TrendingUp size={18} className="text-indigo-600" />
+              <div className="rounded-2xl border border-indigo-200 bg-gradient-to-br from-indigo-50/70 via-white to-sky-50/40 p-4 sm:p-5 shadow-2xs space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-indigo-100 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 rounded-xl bg-indigo-600 text-white shadow-2xs">
+                      <TrendingUp size={18} />
+                    </div>
                     <div>
-                      <p className="text-xs font-black text-indigo-950 uppercase tracking-wider">
-                        Operación Global de Préstamos (Cartera de los Clientes)
-                      </p>
+                      <h4 className="text-xs sm:text-sm font-black text-indigo-950 uppercase tracking-wide">
+                        Analítica Financiera de Préstamos y Rendimiento de Organizaciones
+                      </h4>
                       <p className="text-[11px] text-indigo-700">
-                        Estadísticas operativas agregadas de los préstamos colocados por las organizaciones activas.
+                        Monitoreo de capital colocado, porcentaje de interés y ganancias fijas vs esperadas.
                       </p>
                     </div>
                   </div>
-                  <Badge variant="info" className="text-[10px] font-bold">Filtro de Cartera Activo</Badge>
+
+                  {/* Selector / Filtro por Organización */}
+                  <div className="flex items-center gap-2 w-full sm:w-auto">
+                    <span className="text-xs font-bold text-slate-700 whitespace-nowrap">Filtrar por:</span>
+                    <select
+                      value={selectedPortfolioOrgId}
+                      onChange={(e) => setSelectedPortfolioOrgId(e.target.value)}
+                      className="w-full sm:w-64 rounded-xl border border-indigo-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800 shadow-2xs focus:border-indigo-500 focus:outline-none cursor-pointer"
+                    >
+                      <option value="ALL">🏢 Todas las Organizaciones (Consolidado)</option>
+                      {(tenants ?? [])
+                        .filter((t) => t.status !== 'DELETED')
+                        .map((t) => {
+                          const orgLoansCount = (loans ?? []).filter((l) => l.tenantId === t.tenantId && l.status !== 'CANCELLED').length;
+                          return (
+                            <option key={t.tenantId} value={t.tenantId}>
+                              🏢 {t.name} ({orgLoansCount} créditos)
+                            </option>
+                          );
+                        })}
+                    </select>
+                  </div>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
-                  <div className="bg-white p-2.5 rounded-lg border border-indigo-100">
-                    <span className="text-[10px] uppercase font-bold text-slate-500">Capital Colocado</span>
-                    <p className="text-base font-black text-indigo-900">{formatCOP(globalMetrics.totalLoansPrincipal)}</p>
-                  </div>
-                  <div className="bg-white p-2.5 rounded-lg border border-indigo-100">
-                    <span className="text-[10px] uppercase font-bold text-slate-500">Capital Recuperado</span>
-                    <p className="text-base font-black text-emerald-700">{formatCOP(globalMetrics.totalLoansPaid)}</p>
-                  </div>
-                  <div className="bg-white p-2.5 rounded-lg border border-indigo-100">
-                    <span className="text-[10px] uppercase font-bold text-slate-500">Saldo por Cobrar</span>
-                    <p className="text-base font-black text-amber-700">{formatCOP(globalMetrics.totalLoansPending)}</p>
-                  </div>
-                  <div className="bg-white p-2.5 rounded-lg border border-indigo-100">
-                    <span className="text-[10px] uppercase font-bold text-slate-500">Total Operaciones</span>
-                    <p className="text-xs font-bold text-slate-800 mt-1">
-                      {globalMetrics.validLoansCount} créditos · {globalMetrics.borrowersCount} prestatarios
+
+                {/* Rejilla de Métricas Financieras del Préstamo */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                  {/* Tarjeta 1: Capital Colocado */}
+                  <div className="rounded-xl border border-indigo-100 bg-white p-3.5 shadow-2xs">
+                    <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">
+                      Capital Prestado
+                    </span>
+                    <p className="mt-1 text-base sm:text-lg font-black text-indigo-950">
+                      {formatCOP(portfolioMetrics.totalPrincipalPlaced)}
+                    </p>
+                    <p className="text-[10px] text-slate-500 mt-0.5">
+                      {portfolioMetrics.loansCount} créditos colocados
                     </p>
                   </div>
+
+                  {/* Tarjeta 2: Porcentaje de Colocación */}
+                  <div className="rounded-xl border border-sky-100 bg-white p-3.5 shadow-2xs">
+                    <span className="text-[10px] uppercase font-bold text-sky-700 tracking-wider">
+                      Tasa Promedio (%)
+                    </span>
+                    <p className="mt-1 text-base sm:text-lg font-black text-sky-900">
+                      {portfolioMetrics.avgInterestRate}% <span className="text-[11px] font-medium text-slate-500">/ período</span>
+                    </p>
+                    <p className="text-[10px] text-slate-500 mt-0.5">
+                      Rango: {portfolioMetrics.minRate}% a {portfolioMetrics.maxRate}%
+                    </p>
+                  </div>
+
+                  {/* Tarjeta 3: Ganancias Fijas (Ya Pagadas) */}
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3.5 shadow-2xs">
+                    <span className="text-[10px] uppercase font-bold text-emerald-800 tracking-wider flex items-center gap-1">
+                      <CheckCircle size={12} className="text-emerald-600" /> Ganancias Fijas (Cobradas)
+                    </span>
+                    <p className="mt-1 text-base sm:text-lg font-black text-emerald-900">
+                      {formatCOP(portfolioMetrics.fixedEarningsPaid)}
+                    </p>
+                    <p className="text-[10px] text-emerald-700 mt-0.5 font-medium">
+                      Intereses amortizados y recibidos
+                    </p>
+                  </div>
+
+                  {/* Tarjeta 4: Ganancia Esperada (Por Pagar) */}
+                  <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-3.5 shadow-2xs">
+                    <span className="text-[10px] uppercase font-bold text-amber-800 tracking-wider flex items-center gap-1">
+                      <Clock size={12} className="text-amber-600" /> Ganancia Esperada (Por Pagar)
+                    </span>
+                    <p className="mt-1 text-base sm:text-lg font-black text-amber-900">
+                      {formatCOP(portfolioMetrics.expectedEarningsPending)}
+                    </p>
+                    <p className="text-[10px] text-amber-700 mt-0.5 font-medium">
+                      Intereses pendientes en ruta
+                    </p>
+                  </div>
+
+                  {/* Tarjeta 5: Capital Recuperado vs En Calle */}
+                  <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-2xs col-span-2 sm:col-span-1">
+                    <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">
+                      Capital Recuperado
+                    </span>
+                    <p className="mt-1 text-base sm:text-lg font-black text-slate-900">
+                      {formatCOP(portfolioMetrics.principalPaid)}
+                    </p>
+                    <p className="text-[10px] text-amber-600 font-medium mt-0.5">
+                      En calle: {formatCOP(portfolioMetrics.principalPending)}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Sub-fila informativa de prestatarios */}
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-indigo-100/80 text-[11px] text-slate-600">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <span>👥 Total Prestatarios: <strong className="text-slate-900">{portfolioMetrics.borrowersCount}</strong></span>
+                    <span>•</span>
+                    <span>📑 Contratos de Crédito: <strong className="text-slate-900">{portfolioMetrics.loansCount}</strong></span>
+                    <span>•</span>
+                    <span>💰 Total Intereses Proyectados: <strong className="text-indigo-900">{formatCOP(portfolioMetrics.totalContractInterest)}</strong></span>
+                  </div>
+                  {selectedPortfolioOrgId !== 'ALL' && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedPortfolioOrgId('ALL')}
+                      className="text-indigo-600 hover:text-indigo-800 font-bold underline cursor-pointer"
+                    >
+                      Ver Consolidado Todas las Organizaciones
+                    </button>
+                  )}
                 </div>
               </div>
             )}
