@@ -92,11 +92,11 @@ export async function reportPurgeConfirmation(tenantId: string): Promise<boolean
         actorName: 'Dispositivo Cliente',
         entityId: tenantId,
         entityType: 'tenants',
-        payloadSnapshot: {
+        payloadSnapshot: JSON.stringify({
           confirmadoEn: confirmedAt,
           dispositivo: device,
           detalle: 'Purga local de base de datos ejecutada y confirmada por el cliente',
-        },
+        }),
         createdAt: confirmedAt,
         updatedAt: confirmedAt,
         syncStatus: 'SYNCED',
@@ -182,11 +182,11 @@ export async function checkOfflineTelemetry(tenantId: string): Promise<Telemetry
           actorName: 'App Edición Offline',
           entityId: tenantId,
           entityType: 'tenants',
-          payloadSnapshot: {
+          payloadSnapshot: JSON.stringify({
             detectadoEn: detectedAt,
             dispositivo: device,
             tipo: 'App offline detectada con conexión activa a internet',
-          },
+          }),
           createdAt: detectedAt,
           updatedAt: detectedAt,
           syncStatus: 'SYNCED',

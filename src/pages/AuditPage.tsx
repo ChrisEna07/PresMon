@@ -93,6 +93,10 @@ export default function AuditPage() {
           .map((r) => ({
             ...r,
             timestamp: r.timestamp || r.createdAt || r.updatedAt || new Date().toISOString(),
+            payloadSnapshot:
+              typeof r.payloadSnapshot === 'object' && r.payloadSnapshot !== null
+                ? JSON.stringify(r.payloadSnapshot)
+                : String(r.payloadSnapshot ?? ''),
           }))
           .sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)))
           .slice(0, 300);
@@ -103,6 +107,10 @@ export default function AuditPage() {
           .map((r) => ({
             ...r,
             timestamp: r.timestamp || r.createdAt || r.updatedAt || new Date().toISOString(),
+            payloadSnapshot:
+              typeof r.payloadSnapshot === 'object' && r.payloadSnapshot !== null
+                ? JSON.stringify(r.payloadSnapshot)
+                : String(r.payloadSnapshot ?? ''),
           }))
           .sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)))
           .slice(0, 600);
@@ -135,7 +143,23 @@ export default function AuditPage() {
 
   function describePayload(log: AuditLog): string {
     try {
-      const parsed = JSON.parse(log.payloadSnapshot) as Record<string, unknown>;
+      let parsed: Record<string, unknown> | null = null;
+      if (typeof log.payloadSnapshot === 'string') {
+        const trimmed = log.payloadSnapshot.trim();
+        if (!trimmed) return '';
+        try {
+          parsed = JSON.parse(trimmed) as Record<string, unknown>;
+        } catch {
+          return trimmed;
+        }
+      } else if (log.payloadSnapshot && typeof log.payloadSnapshot === 'object') {
+        parsed = log.payloadSnapshot as Record<string, unknown>;
+      }
+
+      if (!parsed || typeof parsed !== 'object') {
+        return typeof log.payloadSnapshot === 'string' ? log.payloadSnapshot : '';
+      }
+
       if (log.action === 'PAYMENT_APPLIED' && 'montoAplicado' in parsed)
         return `${formatCOP(Number(parsed.montoAplicado))} aplicados · saldo ${formatCOP(Number(parsed.saldoRestante ?? 0))}`;
       if (log.action === 'LOAN_CREATED' && 'monto' in parsed)
@@ -146,12 +170,19 @@ export default function AuditPage() {
         return 'Conflicto resuelto: ganó la versión del servidor (LWW)';
       if ((log.action === 'TENANT_CREATED' || log.action === 'TENANT_DELETED') && 'nombre' in parsed)
         return `Organización «${String(parsed.nombre)}»`;
+      if (log.action === 'OFFLINE_WIPE_CONFIRMED' && ('detalle' in parsed || 'dispositivo' in parsed))
+        return String(parsed.detalle || 'Purga de base local confirmada');
+      if (log.action === 'OFFLINE_ONLINE_DETECTED' && ('tipo' in parsed || 'origen' in parsed || 'dispositivo' in parsed))
+        return String(parsed.tipo || parsed.origen || 'Dispositivo en línea detectado');
+
       return Object.entries(parsed)
         .slice(0, 3)
-        .map(([k, v]) => `${k}: ${String(v).slice(0, 40)}`)
+        .map(([k, v]) => `${k}: ${typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v).slice(0, 40)}`)
         .join(' · ');
     } catch {
-      return log.payloadSnapshot;
+      return typeof log.payloadSnapshot === 'string'
+        ? log.payloadSnapshot
+        : JSON.stringify(log.payloadSnapshot ?? '');
     }
   }
 
@@ -292,7 +323,9 @@ export default function AuditPage() {
                 </span>
                 <div className="flex-1 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                   <div className="flex flex-wrap items-center justify-between gap-1">
-                    <p className="text-sm font-semibold text-slate-800">{ACTION_LABELS[log.action]}</p>
+                    <p className="text-sm font-semibold text-slate-800">
+                      {ACTION_LABELS[log.action] ?? String(log.action)}
+                    </p>
                     <span className="text-[11px] text-slate-400">
                       {formatDateTime(log.timestamp || log.createdAt || log.updatedAt)}
                     </span>
@@ -315,6 +348,9 @@ export default function AuditPage() {
                       <pre className="mt-1 max-h-40 overflow-auto rounded-lg bg-slate-50 p-2 text-[10px] whitespace-pre-wrap text-slate-500">
                         {(() => {
                           try {
+                            if (typeof log.payloadSnapshot === 'object') {
+                              return JSON.stringify(log.payloadSnapshot, null, 2);
+                            }
                             return JSON.stringify(JSON.parse(log.payloadSnapshot), null, 2);
                           } catch {
                             return String(log.payloadSnapshot);

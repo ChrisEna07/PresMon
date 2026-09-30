@@ -118,8 +118,9 @@ export default function SuperAdminPage() {
     (auditLogs ?? []).forEach((l) => {
       if (!l.tenantId) return;
       const prev = map.get(l.tenantId);
-      if (!prev || l.timestamp > prev) {
-        map.set(l.tenantId, l.timestamp);
+      const ts = l.timestamp || l.createdAt || '';
+      if (!prev || ts > prev) {
+        map.set(l.tenantId, ts);
       }
     });
     return map;
