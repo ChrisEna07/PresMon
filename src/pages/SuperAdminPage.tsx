@@ -47,6 +47,7 @@ import {
   Printer,
   Scale,
   RefreshCw,
+  CloudUpload,
 } from 'lucide-react';
 import type {
   BankAccountInfo,
@@ -65,7 +66,7 @@ import { useAuth } from '../store/auth';
 import { sha256Hex } from '../lib/crypto';
 import { logAudit } from '../lib/auditLogger';
 import { uid } from '../lib/id';
-import { addDaysStr, addMonthsStr, cn, formatCOP, formatDateShort, formatDateTime, todayStr } from '../lib/format';
+import { addDaysStr, addMonthsStr, cn, formatCOP, formatDateShort, formatDateTime, nowISO, todayStr } from '../lib/format';
 import { computeMonthlyInvoice } from '../lib/billingEngine';
 import { PageHeader, StatCard } from '../components/misc';
 import { Badge } from '../components/ui/badge';
@@ -76,7 +77,9 @@ import { Switch } from '../components/ui/switch';
 import { TBody, TD, TH, THead, TR, TableWrap } from '../components/ui/table';
 import { useToast } from '../components/ui/toast';
 import { PortalShareModal } from '../components/PortalShareModal';
-import { isSyncConfigured, purgeDocsFromCloud, runSync } from '../lib/sync/syncEngine';
+import { deepSanitize, isSyncConfigured, purgeDocsFromCloud, runSync } from '../lib/sync/syncEngine';
+import { loadFirebaseConfig } from '../lib/sync/firebaseConfig';
+import { backupLocalTenantDataToCloud } from '../lib/offlineTelemetry';
 import { exportBackup } from '../lib/backup';
 import { generateLicenseKey, offlineLinkFor } from '../lib/offlineEdition';
 import {
@@ -217,6 +220,11 @@ export default function SuperAdminPage() {
   const [noticeLevel, setNoticeLevel] = useState<NoticeLevel>('info');
   const [noticeAction, setNoticeAction] = useState<'send' | 'clear'>('send');
 
+  // Estados para Migración Asistida de Offline a Online
+  const [migrateTarget, setMigrateTarget] = useState<Tenant | null>(null);
+  const [migrating, setMigrating] = useState(false);
+  const [migrateConfirmText, setMigrateConfirmText] = useState('');
+
   // Filtro de Organizaciones: Todas / En Línea / Offline
   const [orgFilterMode, setOrgFilterMode] = useState<'ALL' | 'ONLINE' | 'OFFLINE'>('ALL');
 
@@ -279,6 +287,44 @@ export default function SuperAdminPage() {
       window.removeEventListener('resize', handleClose);
     };
   }, [actionMenu]);
+
+  // Escucha en tiempo real de Firestore para Super Admin:
+  // Permite reflejar latidos de conexión (online/offline), confirmaciones de purga
+  // y cambios de estado en menos de 1 segundo sin requerir recargar la página.
+  useEffect(() => {
+    if (!isSyncConfigured()) return;
+    let unsubTenants: (() => void) | undefined;
+    let unsubPlans: (() => void) | undefined;
+    (async () => {
+      try {
+        const cfg = loadFirebaseConfig();
+        if (!cfg) return;
+        const { initializeApp, getApps } = await import('firebase/app');
+        const { getFirestore, collection, onSnapshot } = await import('firebase/firestore');
+        const fs = getFirestore(getApps()[0] ?? initializeApp(cfg));
+
+        unsubTenants = onSnapshot(collection(fs, 'tenants'), async (snap) => {
+          const remoteTenants = snap.docs.map((d) => d.data() as Tenant);
+          if (remoteTenants.length > 0) {
+            await db.tenants.bulkPut(remoteTenants.map((t) => ({ ...t, syncStatus: 'SYNCED' })));
+          }
+        });
+
+        unsubPlans = onSnapshot(collection(fs, 'plans'), async (snap) => {
+          const remotePlans = snap.docs.map((d) => d.data() as ServicePlan);
+          if (remotePlans.length > 0) {
+            await db.plans.bulkPut(remotePlans.map((p) => ({ ...p, syncStatus: 'SYNCED' })));
+          }
+        });
+      } catch (err) {
+        console.warn('[SuperAdmin] Error en realtime listener:', err);
+      }
+    })();
+    return () => {
+      unsubTenants?.();
+      unsubPlans?.();
+    };
+  }, []);
 
   function getTenantOnlineInfo(t: Tenant): {
     badgeVariant: 'success' | 'warning' | 'muted' | 'danger' | 'info';
@@ -360,6 +406,8 @@ export default function SuperAdminPage() {
     let totalPlanContracted = 0;
     let totalPlanCollected = 0;
     let totalPlanOverdue = 0;
+    let totalOverdueInstallmentsAmount = 0;
+    let totalOverdueCloudAmount = 0;
     let tenantsInMoraCount = 0;
     let totalCloudRecurringMonthly = 0;
     let contadoTenantsCount = 0;
@@ -372,6 +420,10 @@ export default function SuperAdminPage() {
       const invoice = computeMonthlyInvoice(plan);
       if (invoice.isOverdueMoreThan5Days) tenantsInMoraCount++;
       totalPlanOverdue += invoice.totalOverdueAmount;
+
+      const cloudOverdue = (invoice.overdueCloudCyclesCount || 0) * (Number(plan.cloudMonthlyFee) || 0);
+      totalOverdueCloudAmount += cloudOverdue;
+      totalOverdueInstallmentsAmount += Math.max(0, invoice.totalOverdueAmount - cloudOverdue);
 
       if (plan.cloudServiceIncluded && (Number(plan.cloudMonthlyFee) || 0) > 0) {
         totalCloudRecurringMonthly += Number(plan.cloudMonthlyFee) || 0;
@@ -480,6 +532,8 @@ export default function SuperAdminPage() {
       totalPlanCollected,
       totalPlanPending,
       totalPlanOverdue,
+      totalOverdueInstallmentsAmount,
+      totalOverdueCloudAmount,
       totalCloudRecurringMonthly,
       tenantsInMoraCount,
       contadoTenantsCount,
@@ -920,6 +974,16 @@ export default function SuperAdminPage() {
         syncStatus: 'PENDING',
       };
       await saveTenant(updated);
+
+      // Enviar orden de purga inmediatamente a Firestore
+      const cfg = loadFirebaseConfig();
+      if (cfg) {
+        const { initializeApp, getApps } = await import('firebase/app');
+        const { getFirestore, doc, setDoc } = await import('firebase/firestore');
+        const fs = getFirestore(getApps()[0] ?? initializeApp(cfg));
+        await setDoc(doc(fs, 'tenants', wipeTarget.tenantId), deepSanitize(updated), { merge: true });
+      }
+
       await logAudit({
         tenantId: '',
         action: 'TENANT_UPDATED',
@@ -948,6 +1012,57 @@ export default function SuperAdminPage() {
     }
   }
 
+  async function handleMigrateToOnline(t: Tenant) {
+    setMigrating(true);
+    try {
+      const now = nowISO();
+      // 1. Crear respaldo seguro de la organización en Firestore antes de migrar
+      await backupLocalTenantDataToCloud(t.tenantId, 'MIGRATE_TO_ONLINE');
+
+      // 2. Actualizar documento de la organización en Firestore
+      const cfg = loadFirebaseConfig();
+      if (cfg) {
+        const { initializeApp, getApps } = await import('firebase/app');
+        const { getFirestore, doc, setDoc } = await import('firebase/firestore');
+        const fs = getFirestore(getApps()[0] ?? initializeApp(cfg));
+
+        await setDoc(
+          doc(fs, 'tenants', t.tenantId),
+          deepSanitize({
+            offlineLicense: null,
+            offlineEditionEnabled: false,
+            tenantMode: 'online',
+            migrationAction: 'MIGRATE_TO_ONLINE',
+            migrationRequestedAt: now,
+            appLocked: false,
+            offlineBlocked: false,
+            unlockedByAdmin: true,
+            updatedAt: now,
+          }),
+          { merge: true },
+        );
+      }
+
+      // 3. Actualizar registro en Dexie local
+      await db.tenants.update(t.tenantId, {
+        offlineLicense: undefined,
+        offlineBlocked: false,
+        appLocked: false,
+        unlockedByAdmin: true,
+        updatedAt: now,
+      });
+
+      toast(`¡Organización «${t.name}» migrada exitosamente a Modo Online con respaldo en la nube!`, 'success');
+      setMigrateTarget(null);
+      setMigrateConfirmText('');
+      pushToCloud();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Error durante la migración a online.', 'error');
+    } finally {
+      setMigrating(false);
+    }
+  }
+
   async function handleReactivateCloudSync(tenant: Tenant) {
     if (!session) return;
     const now = new Date().toISOString();
@@ -962,6 +1077,15 @@ export default function SuperAdminPage() {
       syncStatus: 'PENDING',
     };
     await saveTenant(updated);
+
+    const cfg = loadFirebaseConfig();
+    if (cfg) {
+      const { initializeApp, getApps } = await import('firebase/app');
+      const { getFirestore, doc, setDoc } = await import('firebase/firestore');
+      const fs = getFirestore(getApps()[0] ?? initializeApp(cfg));
+      await setDoc(doc(fs, 'tenants', tenant.tenantId), deepSanitize(updated), { merge: true });
+    }
+
     await logAudit({
       tenantId: tenant.tenantId,
       action: 'TENANT_UPDATED',
@@ -2072,9 +2196,16 @@ export default function SuperAdminPage() {
                 <p className="mt-1 text-lg sm:text-xl font-black text-red-900">
                   {formatCOP(globalMetrics.totalPlanOverdue)}
                 </p>
-                <p className="text-[10px] text-red-700 font-medium mt-0.5">
-                  {globalMetrics.tenantsInMoraCount} organización(es) &gt; 5 días
-                </p>
+                <div className="mt-0.5 space-y-0.5">
+                  <p className="text-[10px] text-red-700 font-medium">
+                    {globalMetrics.tenantsInMoraCount} organización(es) &gt; 5 días
+                  </p>
+                  {globalMetrics.totalPlanOverdue > 0 && (
+                    <p className="text-[9px] text-red-600 font-medium">
+                      Cloud: {formatCOP(globalMetrics.totalOverdueCloudAmount)} · Cuotas: {formatCOP(globalMetrics.totalOverdueInstallmentsAmount)}
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -2819,6 +2950,21 @@ export default function SuperAdminPage() {
                   <HardDriveDownload size={14} className="text-indigo-600 shrink-0" />
                   <span>{t.offlineLicense ? 'Ver enlace Edición Offline' : 'Emitir Edición Offline'}</span>
                 </button>
+
+                {Boolean(t.offlineLicense || t.offlineOnlineDetected) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActionMenu(null);
+                      setMigrateTarget(t);
+                      setMigrateConfirmText('');
+                    }}
+                    className="flex w-full items-center gap-2.5 px-3.5 py-2 hover:bg-sky-50 transition-colors text-left text-sky-800 font-semibold cursor-pointer"
+                  >
+                    <CloudUpload size={14} className="text-sky-600 shrink-0" />
+                    <span>Migrar de Offline a Modo Online (con Respaldo Cloud)</span>
+                  </button>
+                )}
               </div>
 
               {/* Grupo 3: Edición y Credenciales */}
@@ -3998,6 +4144,73 @@ export default function SuperAdminPage() {
               onClick={() => void handleWipeTenantLocalData()}
             >
               <DatabaseZap size={14} /> {wiping ? 'Purgando datos…' : wipeLockOrg ? 'Confirmar purga y bloquear cuenta' : 'Confirmar purga offline'}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* Modal para Migración Asistida de Edición Offline a Modo Online */}
+      <Dialog
+        open={migrateTarget !== null}
+        onClose={() => {
+          if (!migrating) setMigrateTarget(null);
+        }}
+        title={`Migrar a Modo Online (Cloud) · ${migrateTarget?.name ?? ''}`}
+      >
+        <div className="space-y-4">
+          <div className="rounded-xl border border-sky-200 bg-sky-50/70 p-3.5 text-xs text-sky-950 leading-relaxed space-y-2">
+            <p className="font-bold flex items-center gap-1.5 text-sky-900 uppercase">
+              <CloudUpload size={16} className="text-sky-600" /> Transición Segura a Modo Online
+            </p>
+            <p>
+              Esta acción migra la organización <strong>«{migrateTarget?.name}»</strong> de Edición Offline a Modo Online Multiusuario con sincronización y respaldo continuo en la nube.
+            </p>
+            <ul className="list-inside list-disc space-y-1 text-[11px] text-sky-800">
+              <li>
+                <strong>Respaldo Automático:</strong> Se generará una copia de seguridad íntegra en la nube con todos los préstamos, cuotas y clientes antes de cualquier cambio.
+              </li>
+              <li>
+                <strong>Sincronización Multidispositivo:</strong> Se revoca la llave offline exclusiva y se activa el motor cloud de Firestore para que la app opere sincronizada en tiempo real.
+              </li>
+              <li>
+                <strong>Cero Pérdida de Datos:</strong> Al reconectarse el dispositivo cliente, sus datos locales pendientes se subirán automáticamente a las colecciones de la nube.
+              </li>
+            </ul>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+            <p className="font-semibold text-slate-900">Validación de Seguridad:</p>
+            <p className="mt-1 text-[11px] text-slate-600">
+              Para confirmar la migración, escribe exactamente el nombre de la organización: <code className="font-bold text-slate-900 bg-white px-1.5 py-0.5 rounded border border-slate-300">{migrateTarget?.name}</code>
+            </p>
+            <Input
+              value={migrateConfirmText}
+              onChange={(e) => setMigrateConfirmText(e.target.value)}
+              placeholder="Escribe el nombre aquí..."
+              className="mt-2 text-xs bg-white"
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              disabled={migrating}
+              onClick={() => {
+                setMigrateTarget(null);
+                setMigrateConfirmText('');
+              }}
+            >
+              Cancelar
+            </Button>
+            <Button
+              disabled={migrating || migrateConfirmText.trim().toLowerCase() !== (migrateTarget?.name ?? '').trim().toLowerCase()}
+              className="bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs gap-1.5"
+              onClick={() => {
+                if (migrateTarget) void handleMigrateToOnline(migrateTarget);
+              }}
+            >
+              <CloudUpload size={14} />
+              {migrating ? 'Respaldando y migrando…' : 'Confirmar y Migrar a Online'}
             </Button>
           </div>
         </div>

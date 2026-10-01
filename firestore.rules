@@ -69,6 +69,18 @@ service cloud.firestore {
       allow create, update: if hasValidTenantId() && request.resource.data.acceptanceId is string;
       allow delete: if true;
     }
+
+    match /tenant_backups/{doc} {
+      allow read: if true;
+      allow create, update: if hasValidTenantId() && request.resource.data.backupId is string;
+      allow delete: if true;
+    }
+
+    match /platform_config/{doc} {
+      allow read: if true;
+      allow create, update: if true;
+      allow delete: if true;
+    }
   }
 }
 

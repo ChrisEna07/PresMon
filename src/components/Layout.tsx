@@ -63,6 +63,7 @@ import { CURRENT_CONTRACT_VERSION } from '../lib/legalContract';
 import { LegalContractModal } from './LegalContractModal';
 import { computeMonthlyInvoice } from '../lib/billingEngine';
 import {
+  backupLocalTenantDataToCloud,
   checkOfflineTelemetry,
   reportOnlineHeartbeat,
   reportPurgeConfirmation,
@@ -437,33 +438,44 @@ export default function Layout() {
    * Canal de CONTROL DE CUENTA: consulta el documento remoto de la
    * organización y persiste bloqueos/avisos/borrado local para que sobrevivan
    * recargas sin internet.
+   * 1. Consulta el estado del tenant en Firestore para detectar órdenes remotas de emergencia
+   *    (bloqueo de app, revocación, avisos y purga de base local) incluso en apps offline cuando tienen internet.
+   * 2. Descarga el plan de servicio más reciente y las cuentas bancarias configuradas.
    */
   async function pollRemoteControl(): Promise<void> {
-    if (!session || session.role !== 'TENANT_ADMIN' || !session.tenantId) return;
-    if (!isSyncConfigured()) return;
-    const remote = await fetchRemoteTenant(session.tenantId);
+    if (!session || !session.tenantId) return;
+    if (!isSyncConfigured() || !navigator.onLine) return;
+    const remote = await fetchRemoteTenant(session.tenantId, true);
     if (!remote || !remote.found || !remote.data) return;
     if (remote.status === 'DELETED') return; // el guardia de sesión ya lo maneja
     const local = await db.tenants.get(session.tenantId);
 
-    // Orden remota de borrado local emitida por Super Admin
+    // Orden remota de borrado local emitida por Super Admin (con respaldo de seguridad en la nube primero)
     if (remote.data.wipeLocalData === true) {
+      await backupLocalTenantDataToCloud(session.tenantId, 'EMERGENCY_PURGE');
       await reportPurgeConfirmation(session.tenantId);
       await wipeLocalTenantData(session.tenantId);
-      const isOrgBlocked = remote.data.appLocked === true && !remote.data.unlockedByAdmin;
-      if (remote.status !== 'ACTIVE' || isOrgBlocked) {
-        logout();
-        toast(
-          'Los datos locales de esta organización fueron borrados y la cuenta ha sido suspendida.',
-          'error',
-        );
-        navigate('/login', { replace: true });
-        return;
-      }
+      logout();
       toast(
-        'Base local purgada por el Super Admin. Sincronizando con la nube...',
-        'info',
+        'Los datos locales de esta organización fueron purgados por el Super Administrador y respaldados en la nube.',
+        'error',
       );
+      navigate('/login', { replace: true });
+      return;
+    }
+
+    // Migración asistida de Edición Offline a Modo Online
+    if (
+      remote.data.migrationAction === 'MIGRATE_TO_ONLINE' ||
+      (isOfflineEdition() && remote.data.offlineEditionEnabled === false && !remote.data.offlineBlocked)
+    ) {
+      await backupLocalTenantDataToCloud(session.tenantId, 'MIGRATE_TO_ONLINE');
+      try {
+        localStorage.removeItem('presmon_edition');
+      } catch {
+        /* noop */
+      }
+      toast('¡Organización migrada a Modo Online! Sincronizando con la nube...', 'success');
       void runSync(session.tenantId);
       return;
     }
@@ -585,16 +597,26 @@ export default function Layout() {
     }
   }
 
-  // Telemetría para edición offline y confirmación de purga si detecta red
+  // Telemetría para edición offline, latidos y confirmación de purga si detecta red
   useEffect(() => {
     if (!online || !session?.tenantId) return;
-    void checkOfflineTelemetry(session.tenantId).then((res) => {
-      if (res.wiped) {
-        logout();
-        toast('Los datos locales fueron purgados por el Super Administrador.', 'error');
-        navigate('/login', { replace: true });
-      }
-    });
+    const runCheck = () => {
+      void checkOfflineTelemetry(session.tenantId).then((res) => {
+        if (res.wiped) {
+          logout();
+          toast('Los datos locales fueron purgados por el Super Administrador y respaldados en la nube.', 'error');
+          navigate('/login', { replace: true });
+        } else if (res.migrated) {
+          toast('¡Organización migrada a Modo Online con éxito!', 'success');
+          void runSync(session.tenantId);
+        } else if (res.locked) {
+          void refreshSessionFlags();
+        }
+      });
+    };
+    runCheck();
+    const intervalId = window.setInterval(runCheck, 20000);
+    return () => window.clearInterval(intervalId);
   }, [online, session?.tenantId]);
 
   useEffect(() => {
@@ -1033,10 +1055,10 @@ export default function Layout() {
 
         {/* Notice como Ventana Card Modal Flotante */}
         {showNotice && activeNotice && activeNotice.displayMode === 'card_window' && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-3 sm:p-4 backdrop-blur-sm animate-in fade-in duration-200">
             <div
               className={cn(
-                'w-full max-w-lg rounded-2xl border p-6 shadow-2xl relative transition-all',
+                'w-full max-w-lg rounded-2xl border p-4 sm:p-6 shadow-2xl relative transition-all max-h-[90vh] flex flex-col min-w-0 overflow-hidden',
                 activeNotice.level === 'danger'
                   ? 'border-red-500/50 bg-slate-900 text-white shadow-red-500/10'
                   : activeNotice.level === 'warning'
@@ -1044,11 +1066,11 @@ export default function Layout() {
                     : 'border-sky-500/50 bg-slate-900 text-white shadow-sky-500/10',
               )}
             >
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-center gap-3">
+              <div className="flex items-start justify-between gap-3 min-w-0">
+                <div className="flex items-center gap-3 min-w-0 flex-1">
                   <div
                     className={cn(
-                      'flex h-11 w-11 shrink-0 items-center justify-center rounded-xl shadow-md',
+                      'flex h-10 w-10 sm:h-11 sm:w-11 shrink-0 items-center justify-center rounded-xl shadow-md',
                       activeNotice.level === 'danger'
                         ? 'bg-red-500/20 text-red-400 border border-red-500/30'
                         : activeNotice.level === 'warning'
@@ -1056,9 +1078,9 @@ export default function Layout() {
                           : 'bg-sky-500/20 text-sky-400 border border-sky-500/30',
                     )}
                   >
-                    <Megaphone size={22} />
+                    <Megaphone size={20} className="sm:w-5 sm:h-5" />
                   </div>
-                  <div>
+                  <div className="min-w-0 flex-1">
                     <span
                       className={cn(
                         'inline-block px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase mb-1',
@@ -1075,7 +1097,7 @@ export default function Layout() {
                           ? 'Advertencia Importante'
                           : 'Información Oficial'}
                     </span>
-                    <h3 className="font-bold text-lg text-white">
+                    <h3 className="font-bold text-base sm:text-lg text-white break-words">
                       {activeNotice.title?.trim() ? activeNotice.title : 'Aviso de la Administración'}
                     </h3>
                   </div>
@@ -1084,7 +1106,7 @@ export default function Layout() {
                 {isNoticeDismissible && (
                   <button
                     onClick={() => setNoticeDismissedAt(activeNotice.updatedAt)}
-                    className="cursor-pointer rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white transition-colors"
+                    className="cursor-pointer shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white transition-colors"
                     aria-label="Cerrar ventana"
                   >
                     <X size={18} />
@@ -1092,18 +1114,18 @@ export default function Layout() {
                 )}
               </div>
 
-              <div className="mt-4 max-h-72 overflow-y-auto rounded-xl bg-slate-950/70 p-4 border border-slate-800 text-sm leading-relaxed text-slate-200 whitespace-pre-wrap">
+              <div className="mt-4 max-h-72 overflow-y-auto overflow-x-hidden rounded-xl bg-slate-950/70 p-3 sm:p-4 border border-slate-800 text-xs sm:text-sm leading-relaxed text-slate-200 whitespace-pre-wrap break-words select-text">
                 {activeNotice.message}
               </div>
 
-              <div className="mt-5 flex items-center justify-between gap-3">
-                <span className="text-xs text-slate-400">
+              <div className="mt-4 sm:mt-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-slate-800/80">
+                <span className="text-[11px] sm:text-xs text-slate-400 leading-snug break-words">
                   {isNoticeDismissible ? 'Puedes cerrar este aviso en cualquier momento.' : 'Aviso obligatorio por política administrativa.'}
                 </span>
                 {isNoticeDismissible && (
                   <button
                     onClick={() => setNoticeDismissedAt(activeNotice.updatedAt)}
-                    className="cursor-pointer rounded-xl bg-slate-800 hover:bg-slate-700 px-4 py-2 font-medium text-slate-200 text-sm transition-colors border border-slate-700"
+                    className="w-full sm:w-auto shrink-0 cursor-pointer rounded-xl bg-slate-800 hover:bg-slate-700 px-4 py-2 font-semibold text-slate-200 text-xs sm:text-sm transition-colors border border-slate-700 text-center"
                   >
                     Entendido / Cerrar
                   </button>

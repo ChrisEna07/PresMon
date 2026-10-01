@@ -3,8 +3,10 @@ import { NavLink } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
   AlertCircle,
+  AlertTriangle,
   ArrowUpRight,
   BadgeCheck,
+  CheckCircle2,
   Ban,
   Building2,
   Calculator,
@@ -34,6 +36,7 @@ import { formatCOP, formatDateShort, todayStr, addDaysStr, nextMonthlyDue } from
 import { logAudit } from '../lib/auditLogger';
 import { isSyncConfigured, runSync } from '../lib/sync/syncEngine';
 import { openWhatsApp } from '../lib/share';
+import { computeMonthlyInvoice } from '../lib/billingEngine';
 import { cn } from '../lib/format';
 import { PageHeader } from '../components/misc';
 import { Badge } from '../components/ui/badge';
@@ -830,7 +833,35 @@ export default function SuperPlansPage() {
     const nextPendingAmount = nextPending
       ? Math.max(0, (Number(nextPending.amount) || 0) - (Number(nextPending.paidAmount) || 0))
       : 0;
-    const monthlyInvoiceEst = (cloudIncluded ? cloudFeeNum : 0) + nextPendingAmount;
+
+    const existing = tenantId ? planByTenant.get(tenantId) : undefined;
+    const draftPlan: ServicePlan = {
+      planId: existing?.planId ?? tenantId,
+      tenantId,
+      name,
+      appPaymentMode: payMode,
+      appTotalAmount: Number(appTotal) || 0,
+      cloudMonthlyFee: Number(cloudFee) || 0,
+      cloudBillingDay: Number(cloudBillingDay) || 1,
+      cloudServiceIncluded: cloudIncluded,
+      cloudPaidThrough: existing?.cloudPaidThrough,
+      cloudStartDate: existing?.cloudStartDate,
+      installments: rows,
+      createdAt: existing?.createdAt ?? todayStr(),
+      updatedAt: todayStr(),
+      syncStatus: 'SYNCED',
+    };
+    const invoice = computeMonthlyInvoice(draftPlan, today);
+
+    const overdueInstallments = rows.filter(
+      (r) => r.status === 'PENDING' && r.dueDate < today && (Number(r.amount) || 0) > (Number(r.paidAmount) || 0),
+    );
+    const overdueInstallmentsSum = overdueInstallments.reduce(
+      (sum, r) => sum + Math.max(0, (Number(r.amount) || 0) - (Number(r.paidAmount) || 0)),
+      0,
+    );
+    const overdueCloudSum = (invoice.overdueCloudCyclesCount || 0) * (Number(cloudFee) || 0);
+
     return {
       total,
       paid,
@@ -838,10 +869,18 @@ export default function SuperPlansPage() {
       nextPending,
       appTotalNum,
       cloudFeeNum,
-      monthlyInvoiceEst,
+      monthlyInvoiceEst: invoice.totalInvoiceAmount,
       nextPendingAmount,
+      totalOverdueAmount: invoice.totalOverdueAmount,
+      maxDaysOverdue: invoice.maxDaysOverdue,
+      isOverdueMoreThan5Days: invoice.isOverdueMoreThan5Days,
+      overdueCloudCyclesCount: invoice.overdueCloudCyclesCount,
+      overdueCloudSum,
+      overdueInstallmentsCount: overdueInstallments.length,
+      overdueInstallmentsSum,
+      summaryText: invoice.summaryText,
     };
-  }, [rows, appTotal, cloudFee, cloudIncluded]);
+  }, [rows, appTotal, cloudFee, cloudBillingDay, cloudIncluded, tenantId, planByTenant, name, payMode, today]);
 
   return (
     <div>
@@ -906,7 +945,7 @@ export default function SuperPlansPage() {
         </p>
       ) : (
         <>
-          <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-5">
+          <div className="mb-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             <div className="rounded-xl border border-slate-200 bg-white p-3">
               <p className="text-[11px] font-semibold tracking-wide text-slate-400 uppercase">
                 Pago de la app
@@ -941,13 +980,73 @@ export default function SuperPlansPage() {
                   : `Solo cuota app (${formatCOP(summary.nextPendingAmount)})`}
               </p>
             </div>
+            <div className={cn(
+              'rounded-xl border p-3',
+              summary.totalOverdueAmount > 0
+                ? 'border-red-300 bg-red-50/80'
+                : 'border-emerald-200 bg-emerald-50/50',
+            )}>
+              <p className={cn(
+                'text-[11px] font-semibold tracking-wide uppercase flex items-center gap-1',
+                summary.totalOverdueAmount > 0 ? 'text-red-700' : 'text-emerald-700',
+              )}>
+                {summary.totalOverdueAmount > 0 ? <AlertTriangle size={12} /> : <CheckCircle2 size={12} />}
+                Mora Exigible
+              </p>
+              <p className={cn('mt-1 font-bold', summary.totalOverdueAmount > 0 ? 'text-red-900' : 'text-emerald-900')}>
+                {formatCOP(summary.totalOverdueAmount)}
+              </p>
+              <p className={cn('mt-0.5 text-[10px] font-medium', summary.totalOverdueAmount > 0 ? 'text-red-600' : 'text-emerald-600')}>
+                {summary.totalOverdueAmount > 0
+                  ? `${summary.maxDaysOverdue}d mora (${summary.overdueCloudCyclesCount} cloud + ${summary.overdueInstallmentsCount} cuotas)`
+                  : 'Al día (sin mora)'}
+              </p>
+            </div>
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
               <p className="text-[11px] font-semibold tracking-wide text-emerald-600 uppercase">Pagado</p>
               <p className="mt-1 font-bold text-emerald-700">{formatCOP(summary.paid)}</p>
+              <p className="mt-0.5 text-[10px] font-medium text-emerald-600">Abonos aplicados</p>
             </div>
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
               <p className="text-[11px] font-semibold tracking-wide text-amber-600 uppercase">Por cobrar</p>
               <p className="mt-1 font-bold text-amber-700">{formatCOP(summary.pendingTotal)}</p>
+              <p className="mt-0.5 text-[10px] font-medium text-amber-600">Saldo cuotas restante</p>
+            </div>
+          </div>
+
+          {/* Panel Informativo de Conciliación con el Dashboard Global */}
+          <div className="mb-4 rounded-xl border border-indigo-200 bg-gradient-to-r from-indigo-50/70 via-white to-sky-50/50 p-4 shadow-2xs">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-indigo-100 pb-2.5 mb-2.5">
+              <span className="text-xs font-bold text-indigo-950 flex items-center gap-1.5 uppercase tracking-wide">
+                <CheckCircle2 size={15} className="text-indigo-600" /> Conciliación Contable con el Dashboard
+              </span>
+              <span className="text-[11px] text-slate-500 font-medium">
+                Sincronización exacta con métricas del Super Administrador
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+              <div className="bg-white rounded-lg p-2.5 border border-slate-200">
+                <p className="text-[10px] text-slate-500 font-semibold uppercase">Saldo Pendiente de Cuotas</p>
+                <p className="text-sm font-bold text-slate-800 mt-0.5">{formatCOP(summary.pendingTotal)}</p>
+                <p className="text-[10px] text-slate-400 mt-0.5">Capital pactado por recaudar en la app</p>
+              </div>
+              <div className="bg-white rounded-lg p-2.5 border border-sky-200">
+                <p className="text-[10px] text-sky-700 font-semibold uppercase">Factura Exigible del Ciclo</p>
+                <p className="text-sm font-bold text-sky-900 mt-0.5">{formatCOP(summary.monthlyInvoiceEst)}</p>
+                <p className="text-[10px] text-sky-600 mt-0.5">Mensualidad actual + cuota en curso</p>
+              </div>
+              <div className="bg-white rounded-lg p-2.5 border border-red-200">
+                <p className="text-[10px] text-red-700 font-semibold uppercase">Mora Exigible en Dashboard</p>
+                <p className="text-sm font-bold text-red-900 mt-0.5">{formatCOP(summary.totalOverdueAmount)}</p>
+                <p className="text-[10px] text-red-600 mt-0.5">
+                  {summary.overdueCloudCyclesCount} ciclo(s) cloud ({formatCOP(summary.overdueCloudSum)}) + {summary.overdueInstallmentsCount} cuota(s) vencidas ({formatCOP(summary.overdueInstallmentsSum)})
+                </p>
+              </div>
+              <div className="bg-white rounded-lg p-2.5 border border-emerald-200">
+                <p className="text-[10px] text-emerald-700 font-semibold uppercase">Recaudado y Amortizado</p>
+                <p className="text-sm font-bold text-emerald-900 mt-0.5">{formatCOP(summary.paid)}</p>
+                <p className="text-[10px] text-emerald-600 mt-0.5">Abonos recibidos en cuotas</p>
+              </div>
             </div>
           </div>
 

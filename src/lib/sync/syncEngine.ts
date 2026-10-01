@@ -255,8 +255,11 @@ export interface RemoteTenantState {
  * Lee el documento remoto de una organización. Devuelve null si no hay
  * conexión o Firebase no está configurado (no se debe actuar en ese caso).
  */
-export async function fetchRemoteTenant(tenantId: string): Promise<RemoteTenantState | null> {
-  if (isOfflineEdition()) return null;
+export async function fetchRemoteTenant(
+  tenantId: string,
+  allowOfflineEmergency = false,
+): Promise<RemoteTenantState | null> {
+  if (isOfflineEdition() && !allowOfflineEmergency) return null;
   try {
     const fs = await getFirestore();
     const { doc, getDoc } = await import('firebase/firestore');
