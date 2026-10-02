@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { AuthProvider, useAuth } from './store/auth';
 import { ToastProvider, useToast } from './components/ui/toast';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import Layout from './components/Layout';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
@@ -26,7 +27,16 @@ import { isSyncConfigured, runSync, setLastSync } from './lib/sync/syncEngine';
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const { session, ready } = useAuth();
-  if (!ready) return null;
+  if (!ready) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-900 text-slate-400">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-10 w-10 animate-spin rounded-full border-3 border-emerald-500 border-t-transparent" />
+          <p className="text-xs font-medium text-slate-400">Iniciando PresMon…</p>
+        </div>
+      </div>
+    );
+  }
   if (!session) return <Navigate to="/login" replace />;
   return <>{children}</>;
 }
@@ -56,23 +66,28 @@ function AppEffects() {
   const { toast } = useToast();
 
   useEffect(() => {
-    void seedDatabase();
+    void seedDatabase().catch((err) => console.warn('[Seed] Error inicializando base de datos:', err));
   }, []);
 
   useEffect(() => {
     if (!session) return;
     const actor = { id: session.userId, name: session.displayName };
-    void runMoraEvaluation(session.tenantId || '', actor).then((changed) => {
-      if (changed > 0) {
-        toast(`Motor de mora: ${changed} cuota(s) actualizada(s) automáticamente.`, 'info');
-      }
-    });
+    void runMoraEvaluation(session.tenantId || '', actor)
+      .then((changed) => {
+        if (changed > 0) {
+          toast(`Motor de mora: ${changed} cuota(s) actualizada(s) automáticamente.`, 'info');
+        }
+      })
+      .catch((err) => {
+        console.warn('[Mora] Error en evaluación automática:', err);
+      });
     return startDayWatch(session.tenantId || '', actor);
   }, [session?.userId]);
 
   useEffect(() => {
     if (!session || !isSyncConfigured()) return;
     const attempt = () => {
+      if (typeof navigator !== 'undefined' && !navigator.onLine) return;
       void runSync(session.role === 'SUPER_ADMIN' ? undefined : session.tenantId)
         .then((r) => {
           if (r.pushed > 0 || r.pulled > 0) {
@@ -101,14 +116,44 @@ export default function App() {
         <AppEffects />
         <BrowserRouter>
           <Routes>
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/portal" element={<ClientPortalPage />} />
-            <Route path="/edicion-offline" element={<OfflineEditionPage />} />
-            <Route path="/socio" element={<SocioPage />} />
+            <Route
+              path="/login"
+              element={
+                <ErrorBoundary fallbackTitle="Error en pantalla de acceso">
+                  <LoginPage />
+                </ErrorBoundary>
+              }
+            />
+            <Route
+              path="/portal"
+              element={
+                <ErrorBoundary fallbackTitle="Error en portal de clientes">
+                  <ClientPortalPage />
+                </ErrorBoundary>
+              }
+            />
+            <Route
+              path="/edicion-offline"
+              element={
+                <ErrorBoundary fallbackTitle="Error en edición offline">
+                  <OfflineEditionPage />
+                </ErrorBoundary>
+              }
+            />
+            <Route
+              path="/socio"
+              element={
+                <ErrorBoundary fallbackTitle="Error en módulo de socio">
+                  <SocioPage />
+                </ErrorBoundary>
+              }
+            />
             <Route
               element={
                 <RequireAuth>
-                  <Layout />
+                  <ErrorBoundary fallbackTitle="Error en la interfaz principal">
+                    <Layout />
+                  </ErrorBoundary>
                 </RequireAuth>
               }
             >

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertTriangle, CloudOff, LogIn, RefreshCw, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, CloudOff, LogIn, MessageCircle, RefreshCw, ShieldCheck, Sparkles } from 'lucide-react';
 import { useAuth, type Session } from '../store/auth';
 import { db } from '../db/db';
 import { Button } from '../components/ui/button';
@@ -210,6 +210,48 @@ export default function LoginPage() {
             </form>
           </CardContent>
         </Card>
+
+        {/* Bloque CTA: Llamado a la acción y Soporte Exclusivo WhatsApp */}
+        <div className="mt-4 overflow-hidden rounded-2xl border border-emerald-500/30 bg-gradient-to-b from-slate-800/90 via-slate-900 to-slate-950 p-4 shadow-xl">
+          <div className="flex items-start gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-500/20 text-emerald-400 ring-1 ring-emerald-500/30">
+              <Sparkles size={18} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h3 className="text-xs font-bold text-white tracking-tight">¿Aún no tienes acceso a PresMon?</h3>
+              <p className="mt-0.5 text-[11px] text-slate-300 leading-snug">
+                Gestiona tus préstamos, cobros diarios en ruta y contratos con total seguridad, respaldo en la nube y modo offline.
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-3 rounded-xl border border-emerald-500/20 bg-emerald-950/40 p-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] font-bold tracking-wider text-emerald-400 uppercase">
+                Canal de soporte
+              </span>
+              <span className="inline-flex items-center rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
+                Solo WhatsApp
+              </span>
+            </div>
+            <p className="mt-1 font-mono text-sm font-black text-emerald-200">
+              +57 318 351 7802
+            </p>
+            <p className="mt-0.5 text-[10px] text-slate-400">
+              Atención directa para solicitudes de acceso, activación y soporte técnico oficial.
+            </p>
+          </div>
+
+          <a
+            href="https://wa.me/573183517802?text=Hola,%20solicito%20acceso%20o%20informaci%C3%B3n%20sobre%20la%20app."
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-[#25D366] px-4 py-2.5 text-xs font-bold text-slate-950 shadow-md shadow-emerald-950/40 hover:bg-[#20ba5a] transition-all hover:scale-[1.01] active:scale-[0.99]"
+          >
+            <MessageCircle size={15} className="text-slate-950" />
+            <span>Solicitar acceso vía WhatsApp</span>
+          </a>
+        </div>
 
         <button
           onClick={() => setSuperMode(!superMode)}

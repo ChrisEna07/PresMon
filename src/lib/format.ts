@@ -13,6 +13,7 @@ export function formatCOP(n: number): string {
 }
 
 export function toDateStr(d: Date): string {
+  if (!(d instanceof Date) || isNaN(d.getTime())) return todayStr();
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
@@ -20,12 +21,21 @@ export function toDateStr(d: Date): string {
 }
 
 export function todayStr(): string {
-  return toDateStr(new Date());
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
-export function parseDateStr(iso: string): Date {
-  const [y, m, d] = iso.slice(0, 10).split('-').map(Number);
-  return new Date(y, (m || 1) - 1, d || 1);
+export function parseDateStr(iso?: string | null): Date {
+  if (!iso || typeof iso !== 'string') return new Date();
+  const parts = iso.slice(0, 10).split('-').map(Number);
+  const y = parts[0] || 1970;
+  const m = parts[1] || 1;
+  const d = parts[2] || 1;
+  const parsed = new Date(y, m - 1, d);
+  return isNaN(parsed.getTime()) ? new Date() : parsed;
 }
 
 export function addDaysStr(iso: string, n: number): string {
@@ -44,9 +54,11 @@ export function addMonthsStr(iso: string, n: number): string {
   return toDateStr(d);
 }
 
-export function diffDays(fromISO: string, toISO: string): number {
+export function diffDays(fromISO?: string | null, toISO?: string | null): number {
+  if (!fromISO || !toISO) return 0;
   const a = parseDateStr(fromISO).getTime();
   const b = parseDateStr(toISO).getTime();
+  if (isNaN(a) || isNaN(b)) return 0;
   return Math.round((b - a) / 86400000);
 }
 
@@ -70,9 +82,11 @@ export function nextMonthlyDue(day: number, paidThrough?: string): string {
   return `${today.slice(0, 8)}${dayStr}`;
 }
 
-export function formatDateShort(iso: string): string {
-  if (!iso) return '';
-  const [y, m, d] = iso.slice(0, 10).split('-');
+export function formatDateShort(iso?: string | null): string {
+  if (!iso || typeof iso !== 'string') return '—';
+  const parts = iso.slice(0, 10).split('-');
+  if (parts.length < 3) return iso;
+  const [y, m, d] = parts;
   return `${d}/${m}/${y}`;
 }
 
@@ -82,16 +96,29 @@ const longFormatter = new Intl.DateTimeFormat('es-CO', {
   year: 'numeric',
 });
 
-export function formatDateLong(iso: string): string {
-  return longFormatter.format(parseDateStr(iso));
+export function formatDateLong(iso?: string | null): string {
+  if (!iso || typeof iso !== 'string') return '—';
+  try {
+    const parsed = parseDateStr(iso);
+    if (isNaN(parsed.getTime())) return '—';
+    return longFormatter.format(parsed);
+  } catch {
+    return '—';
+  }
 }
 
-export function formatDateTime(isoDateTime: string): string {
-  const d = new Date(isoDateTime);
-  return new Intl.DateTimeFormat('es-CO', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(d);
+export function formatDateTime(isoDateTime?: string | null): string {
+  if (!isoDateTime || typeof isoDateTime !== 'string') return '—';
+  try {
+    const d = new Date(isoDateTime);
+    if (isNaN(d.getTime())) return '—';
+    return new Intl.DateTimeFormat('es-CO', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(d);
+  } catch {
+    return '—';
+  }
 }
 
 export function nowISO(): string {

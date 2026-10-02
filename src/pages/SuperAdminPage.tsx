@@ -295,34 +295,65 @@ export default function SuperAdminPage() {
     if (!isSyncConfigured()) return;
     let unsubTenants: (() => void) | undefined;
     let unsubPlans: (() => void) | undefined;
+    let isCancelled = false;
+
     (async () => {
       try {
+        if (typeof navigator !== 'undefined' && !navigator.onLine) return;
         const cfg = loadFirebaseConfig();
-        if (!cfg) return;
+        if (!cfg || isCancelled) return;
         const { initializeApp, getApps } = await import('firebase/app');
         const { getFirestore, collection, onSnapshot } = await import('firebase/firestore');
         const fs = getFirestore(getApps()[0] ?? initializeApp(cfg));
 
-        unsubTenants = onSnapshot(collection(fs, 'tenants'), async (snap) => {
-          const remoteTenants = snap.docs.map((d) => d.data() as Tenant);
-          if (remoteTenants.length > 0) {
-            await db.tenants.bulkPut(remoteTenants.map((t) => ({ ...t, syncStatus: 'SYNCED' })));
-          }
-        });
+        if (isCancelled) return;
 
-        unsubPlans = onSnapshot(collection(fs, 'plans'), async (snap) => {
-          const remotePlans = snap.docs.map((d) => d.data() as ServicePlan);
-          if (remotePlans.length > 0) {
-            await db.plans.bulkPut(remotePlans.map((p) => ({ ...p, syncStatus: 'SYNCED' })));
-          }
-        });
+        unsubTenants = onSnapshot(
+          collection(fs, 'tenants'),
+          async (snap) => {
+            try {
+              const remoteTenants = snap.docs.map((d) => d.data() as Tenant);
+              if (remoteTenants.length > 0) {
+                await db.tenants.bulkPut(remoteTenants.map((t) => ({ ...t, syncStatus: 'SYNCED' })));
+              }
+            } catch (err) {
+              console.warn('[SuperAdmin] Error almacenando tenants en vivo:', err);
+            }
+          },
+          (err) => {
+            console.warn('[SuperAdmin] Listener tenants offline o desconectado:', err);
+          },
+        );
+
+        unsubPlans = onSnapshot(
+          collection(fs, 'plans'),
+          async (snap) => {
+            try {
+              const remotePlans = snap.docs.map((d) => d.data() as ServicePlan);
+              if (remotePlans.length > 0) {
+                await db.plans.bulkPut(remotePlans.map((p) => ({ ...p, syncStatus: 'SYNCED' })));
+              }
+            } catch (err) {
+              console.warn('[SuperAdmin] Error almacenando planes en vivo:', err);
+            }
+          },
+          (err) => {
+            console.warn('[SuperAdmin] Listener plans offline o desconectado:', err);
+          },
+        );
       } catch (err) {
         console.warn('[SuperAdmin] Error en realtime listener:', err);
       }
     })();
+
     return () => {
-      unsubTenants?.();
-      unsubPlans?.();
+      isCancelled = true;
+      try {
+        unsubTenants?.();
+        unsubPlans?.();
+      } catch {
+        /* noop */
+      }
     };
   }, []);
 
@@ -346,8 +377,18 @@ export default function SuperAdminPage() {
       };
     }
 
-    const elapsedMs = Date.now() - new Date(seenAt).getTime();
-    const elapsedMins = Math.max(0, elapsedMs / 60000);
+    const timeVal = new Date(seenAt).getTime();
+    if (isNaN(timeVal)) {
+      return {
+        badgeVariant: 'muted',
+        text: 'Sin registro',
+        tooltip: 'Esta organización no ha registrado conexiones válidas.',
+        isLive: false,
+      };
+    }
+
+    const elapsedMs = Math.max(0, Date.now() - timeVal);
+    const elapsedMins = elapsedMs / 60000;
     const device = t.lastSeenDevice || t.offlineDeviceInfo || (auditTime === seenAt ? 'Registro en Auditoría' : 'Navegador Web');
 
     if (elapsedMins <= 4) {

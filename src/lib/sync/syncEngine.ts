@@ -92,11 +92,14 @@ async function getFirestore() {
  * sin efecto sobre la sincronización).
  */
 export async function runSync(tenantId?: string): Promise<SyncResult> {
-  if (isOfflineEdition()) return { pushed: 0, pulled: 0, errors: [] };
-  const fs = await getFirestore();
-  const result: SyncResult = { pushed: 0, pulled: 0, errors: [] };
+  if (isOfflineEdition() || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    return { pushed: 0, pulled: 0, errors: [] };
+  }
+  try {
+    const fs = await getFirestore();
+    const result: SyncResult = { pushed: 0, pulled: 0, errors: [] };
 
-  for (const name of SYNCED_COLLECTIONS) {
+    for (const name of SYNCED_COLLECTIONS) {
     try {
       const table = db.table(name);
       const key = idKeyOf(name);
@@ -243,6 +246,9 @@ export async function runSync(tenantId?: string): Promise<SyncResult> {
   }
 
   return result;
+  } catch (err) {
+    return { pushed: 0, pulled: 0, errors: [err instanceof Error ? err.message : String(err)] };
+  }
 }
 
 export interface RemoteTenantState {
@@ -260,6 +266,7 @@ export async function fetchRemoteTenant(
   allowOfflineEmergency = false,
 ): Promise<RemoteTenantState | null> {
   if (isOfflineEdition() && !allowOfflineEmergency) return null;
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return null;
   try {
     const fs = await getFirestore();
     const { doc, getDoc } = await import('firebase/firestore');
@@ -273,57 +280,69 @@ export async function fetchRemoteTenant(
 }
 
 export async function pullBootstrap(): Promise<SyncResult> {
-  const fs = await getFirestore();
-  const result: SyncResult = { pushed: 0, pulled: 0, errors: [] };
-  const { collection, getDocs } = await import('firebase/firestore');
-
-  for (const name of SYNCED_COLLECTIONS) {
-    try {
-      const table = db.table(name);
-      const key = idKeyOf(name);
-      const snap = await getDocs(collection(fs, name));
-      for (const d of snap.docs) {
-        const remote = d.data() as (BaseRecord & Record<string, unknown>) | undefined;
-        if (!remote || !remote[key]) continue;
-        const local = (await table.get(String(remote[key]))) as
-          | (BaseRecord & Record<string, unknown>)
-          | undefined;
-        if (!local || String(remote.updatedAt ?? '') > String(local.updatedAt ?? '')) {
-          await table.put({ ...remote, syncStatus: 'SYNCED' });
-          result.pulled += 1;
-        }
-      }
-    } catch (err) {
-      result.errors.push(`${name}: ${err instanceof Error ? err.message : String(err)}`);
-    }
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return { pushed: 0, pulled: 0, errors: [] };
   }
+  try {
+    const fs = await getFirestore();
+    const result: SyncResult = { pushed: 0, pulled: 0, errors: [] };
+    const { collection, getDocs } = await import('firebase/firestore');
 
-  return result;
+    for (const name of SYNCED_COLLECTIONS) {
+      try {
+        const table = db.table(name);
+        const key = idKeyOf(name);
+        const snap = await getDocs(collection(fs, name));
+        for (const d of snap.docs) {
+          const remote = d.data() as (BaseRecord & Record<string, unknown>) | undefined;
+          if (!remote || !remote[key]) continue;
+          const local = (await table.get(String(remote[key]))) as
+            | (BaseRecord & Record<string, unknown>)
+            | undefined;
+          if (!local || String(remote.updatedAt ?? '') > String(local.updatedAt ?? '')) {
+            await table.put({ ...remote, syncStatus: 'SYNCED' });
+            result.pulled += 1;
+          }
+        }
+      } catch (err) {
+        result.errors.push(`${name}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    return result;
+  } catch (err) {
+    return { pushed: 0, pulled: 0, errors: [err instanceof Error ? err.message : String(err)] };
+  }
 }
 
 export async function purgeDocsFromCloud(
   entries: Array<{ collection: string; ids: string[] }>,
 ): Promise<number> {
-  const fs = await getFirestore();
-  const { doc, deleteDoc, writeBatch } = await import('firebase/firestore');
-  let purged = 0;
-  for (const { collection: name, ids } of entries) {
-    for (let i = 0; i < ids.length; i += 400) {
-      const chunk = ids.slice(i, i + 400);
-      if (chunk.length <= 8) {
-        for (const id of chunk) {
-          await deleteDoc(doc(fs, name, id));
-          purged += 1;
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return 0;
+  try {
+    const fs = await getFirestore();
+    const { doc, deleteDoc, writeBatch } = await import('firebase/firestore');
+    let purged = 0;
+    for (const { collection: name, ids } of entries) {
+      for (let i = 0; i < ids.length; i += 400) {
+        const chunk = ids.slice(i, i + 400);
+        if (chunk.length <= 8) {
+          for (const id of chunk) {
+            await deleteDoc(doc(fs, name, id));
+            purged += 1;
+          }
+        } else {
+          const batch = writeBatch(fs);
+          for (const id of chunk) batch.delete(doc(fs, name, id));
+          await batch.commit();
+          purged += chunk.length;
         }
-      } else {
-        const batch = writeBatch(fs);
-        for (const id of chunk) batch.delete(doc(fs, name, id));
-        await batch.commit();
-        purged += chunk.length;
       }
     }
+    return purged;
+  } catch {
+    return 0;
   }
-  return purged;
 }
 
 export async function ensureSuperAdminSynced(userId: string): Promise<void> {

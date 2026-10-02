@@ -145,6 +145,12 @@ export default function Layout() {
     }
   });
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+  const [tenantLoadTimeout, setTenantLoadTimeout] = useState(false);
+
+  useEffect(() => {
+    const t = setTimeout(() => setTenantLoadTimeout(true), 2500);
+    return () => clearTimeout(t);
+  }, []);
 
   function toggleSidebar() {
     setSidebarCollapsed((prev) => {
@@ -445,178 +451,192 @@ export default function Layout() {
   async function pollRemoteControl(): Promise<void> {
     if (!session || !session.tenantId) return;
     if (!isSyncConfigured() || !navigator.onLine) return;
-    const remote = await fetchRemoteTenant(session.tenantId, true);
-    if (!remote || !remote.found || !remote.data) return;
-    if (remote.status === 'DELETED') return; // el guardia de sesión ya lo maneja
-    const local = await db.tenants.get(session.tenantId);
-
-    // Orden remota de borrado local emitida por Super Admin (con respaldo de seguridad en la nube primero)
-    if (remote.data.wipeLocalData === true) {
-      await backupLocalTenantDataToCloud(session.tenantId, 'EMERGENCY_PURGE');
-      await reportPurgeConfirmation(session.tenantId);
-      await wipeLocalTenantData(session.tenantId);
-      logout();
-      toast(
-        'Los datos locales de esta organización fueron purgados por el Super Administrador y respaldados en la nube.',
-        'error',
-      );
-      navigate('/login', { replace: true });
-      return;
-    }
-
-    // Migración asistida de Edición Offline a Modo Online
-    if (
-      remote.data.migrationAction === 'MIGRATE_TO_ONLINE' ||
-      (isOfflineEdition() && remote.data.offlineEditionEnabled === false && !remote.data.offlineBlocked)
-    ) {
-      await backupLocalTenantDataToCloud(session.tenantId, 'MIGRATE_TO_ONLINE');
-      try {
-        localStorage.removeItem('presmon_edition');
-      } catch {
-        /* noop */
-      }
-      toast('¡Organización migrada a Modo Online! Sincronizando con la nube...', 'success');
-      void runSync(session.tenantId);
-      return;
-    }
-
-    // Sincronización en caliente del plan de servicio y cuentas de la plataforma desde Firestore
     try {
-      const cfg = loadFirebaseConfig();
-      if (cfg) {
-        const { initializeApp, getApps } = await import('firebase/app');
-        const { getFirestore, collection, query, where, getDocs, doc, getDoc } = await import('firebase/firestore');
-        const fs = getFirestore(getApps()[0] ?? initializeApp(cfg));
+      const remote = await fetchRemoteTenant(session.tenantId, true);
+      if (!remote || !remote.found || !remote.data) return;
+      if (remote.status === 'DELETED') return; // el guardia de sesión ya lo maneja
+      const local = await db.tenants.get(session.tenantId);
 
-        // 1. Descargar planes de la organización
-        const planSnap = await getDocs(
-          query(collection(fs, 'plans'), where('tenantId', '==', session.tenantId)),
+      // Orden remota de borrado local emitida por Super Admin (con respaldo de seguridad en la nube primero)
+      if (remote.data.wipeLocalData === true) {
+        await backupLocalTenantDataToCloud(session.tenantId, 'EMERGENCY_PURGE');
+        await reportPurgeConfirmation(session.tenantId);
+        await wipeLocalTenantData(session.tenantId);
+        logout();
+        toast(
+          'Los datos locales de esta organización fueron purgados por el Super Administrador y respaldados en la nube.',
+          'error',
         );
-        for (const docSnap of planSnap.docs) {
-          const remotePlan = docSnap.data() as ServicePlan;
-          if (remotePlan && remotePlan.planId) {
-            const localPlan = await db.plans.get(remotePlan.planId);
-            if (!localPlan || String(remotePlan.updatedAt ?? '') >= String(localPlan.updatedAt ?? '')) {
-              await db.plans.put({ ...remotePlan, syncStatus: 'SYNCED' });
+        navigate('/login', { replace: true });
+        return;
+      }
+
+      // Migración asistida de Edición Offline a Modo Online
+      if (
+        remote.data.migrationAction === 'MIGRATE_TO_ONLINE' ||
+        (isOfflineEdition() && remote.data.offlineEditionEnabled === false && !remote.data.offlineBlocked)
+      ) {
+        await backupLocalTenantDataToCloud(session.tenantId, 'MIGRATE_TO_ONLINE');
+        try {
+          localStorage.removeItem('presmon_edition');
+        } catch {
+          /* noop */
+        }
+        toast('¡Organización migrada a Modo Online! Sincronizando con la nube...', 'success');
+        void runSync(session.tenantId).catch(() => undefined);
+        return;
+      }
+
+      // Sincronización en caliente del plan de servicio y cuentas de la plataforma desde Firestore
+      try {
+        const cfg = loadFirebaseConfig();
+        if (cfg) {
+          const { initializeApp, getApps } = await import('firebase/app');
+          const { getFirestore, collection, query, where, getDocs, doc, getDoc } = await import('firebase/firestore');
+          const fs = getFirestore(getApps()[0] ?? initializeApp(cfg));
+
+          // 1. Descargar planes de la organización
+          const planSnap = await getDocs(
+            query(collection(fs, 'plans'), where('tenantId', '==', session.tenantId)),
+          );
+          for (const docSnap of planSnap.docs) {
+            const remotePlan = docSnap.data() as ServicePlan;
+            if (remotePlan && remotePlan.planId) {
+              const localPlan = await db.plans.get(remotePlan.planId);
+              if (!localPlan || String(remotePlan.updatedAt ?? '') >= String(localPlan.updatedAt ?? '')) {
+                await db.plans.put({ ...remotePlan, syncStatus: 'SYNCED' });
+              }
+            }
+          }
+
+          // 2. Descargar cuentas bancarias oficiales de la plataforma
+          const bankSnap = await getDoc(doc(fs, 'platform_config', 'bank_accounts'));
+          if (bankSnap.exists()) {
+            const bData = bankSnap.data();
+            if (Array.isArray(bData?.accounts) && bData.accounts.length > 0) {
+              setPlatformBankAccounts(bData.accounts as BankAccountInfo[]);
             }
           }
         }
-
-        // 2. Descargar cuentas bancarias oficiales de la plataforma
-        const bankSnap = await getDoc(doc(fs, 'platform_config', 'bank_accounts'));
-        if (bankSnap.exists()) {
-          const bData = bankSnap.data();
-          if (Array.isArray(bData?.accounts) && bData.accounts.length > 0) {
-            setPlatformBankAccounts(bData.accounts as BankAccountInfo[]);
-          }
-        }
+      } catch {
+        /* silencio en fallos transitorios de red */
       }
-    } catch {
-      /* silencio en fallos transitorios de red */
-    }
 
-    const nextLocked = remote.data.appLocked === true;
-    const nextUnlocked = remote.data.unlockedByAdmin === true;
-    const nextOfflineBlocked = remote.data.offlineBlocked === true;
-    const nextBannerDeactivated = remote.data.paymentBannerDeactivated === true;
-    const nextClientPortalEnabled = remote.data.clientPortalEnabled !== false;
-    const nextSettingsModuleEnabled = remote.data.settingsModuleEnabled !== false;
-    const nextAuditModuleEnabled = remote.data.auditModuleEnabled === true;
-    const nextSocioModuleEnabled = remote.data.socioModuleEnabled === true;
-    const nextAllowMultipleSessions = remote.data.allowMultipleSessions === true;
-    const nextMaxAdmins = typeof remote.data.maxAdmins === 'number' ? remote.data.maxAdmins : 1;
-    const nextWhatsApp =
-      typeof remote.data.paymentWhatsAppPhone === 'string'
-        ? remote.data.paymentWhatsAppPhone
+      const nextLocked = remote.data.appLocked === true;
+      const nextUnlocked = remote.data.unlockedByAdmin === true;
+      const nextOfflineBlocked = remote.data.offlineBlocked === true;
+      const nextBannerDeactivated = remote.data.paymentBannerDeactivated === true;
+      const nextClientPortalEnabled = remote.data.clientPortalEnabled !== false;
+      const nextSettingsModuleEnabled = remote.data.settingsModuleEnabled !== false;
+      const nextAuditModuleEnabled = remote.data.auditModuleEnabled === true;
+      const nextSocioModuleEnabled = remote.data.socioModuleEnabled === true;
+      const nextAllowMultipleSessions = remote.data.allowMultipleSessions === true;
+      const nextMaxAdmins = typeof remote.data.maxAdmins === 'number' ? remote.data.maxAdmins : 1;
+      const nextWhatsApp =
+        typeof remote.data.paymentWhatsAppPhone === 'string'
+          ? remote.data.paymentWhatsAppPhone
+          : undefined;
+      const nextBankAccounts = Array.isArray(remote.data.bankAccounts)
+        ? (remote.data.bankAccounts as BankAccountInfo[])
         : undefined;
-    const nextBankAccounts = Array.isArray(remote.data.bankAccounts)
-      ? (remote.data.bankAccounts as BankAccountInfo[])
-      : undefined;
-    const nextPaymentDismissible = remote.data.paymentBannerDismissible === true;
-    const nextPaymentExpiresAt =
-      typeof remote.data.paymentBannerExpiresAt === 'string'
-        ? remote.data.paymentBannerExpiresAt
-        : undefined;
-    const nextNotice = (remote.data.notice ?? undefined) as Tenant['notice'];
-    const nextActiveAbono = (remote.data.activeAbono ?? undefined) as Tenant['activeAbono'];
+      const nextPaymentDismissible = remote.data.paymentBannerDismissible === true;
+      const nextPaymentExpiresAt =
+        typeof remote.data.paymentBannerExpiresAt === 'string'
+          ? remote.data.paymentBannerExpiresAt
+          : undefined;
+      const nextNotice = (remote.data.notice ?? undefined) as Tenant['notice'];
+      const nextActiveAbono = (remote.data.activeAbono ?? undefined) as Tenant['activeAbono'];
 
-    const targetLocal = local ?? ({
-      tenantId: session.tenantId,
-      name: remote.data.name || session.tenantName,
-      adminUid: session.userId,
-      status: remote.status,
-      clientPortalEnabled: nextClientPortalEnabled,
-      settingsModuleEnabled: nextSettingsModuleEnabled,
-      createdAt: String(remote.data.createdAt || todayStr()),
-      updatedAt: String(remote.data.updatedAt || todayStr()),
-      syncStatus: 'SYNCED',
-    } as Tenant);
-
-    const changed =
-      !local ||
-      local.appLocked !== nextLocked ||
-      local.unlockedByAdmin !== nextUnlocked ||
-      local.offlineBlocked !== nextOfflineBlocked ||
-      local.paymentBannerDeactivated !== nextBannerDeactivated ||
-      local.clientPortalEnabled !== nextClientPortalEnabled ||
-      local.settingsModuleEnabled !== nextSettingsModuleEnabled ||
-      local.auditModuleEnabled !== nextAuditModuleEnabled ||
-      local.socioModuleEnabled !== nextSocioModuleEnabled ||
-      local.allowMultipleSessions !== nextAllowMultipleSessions ||
-      local.maxAdmins !== nextMaxAdmins ||
-      local.paymentWhatsAppPhone !== nextWhatsApp ||
-      local.paymentBannerDismissible !== nextPaymentDismissible ||
-      local.paymentBannerExpiresAt !== nextPaymentExpiresAt ||
-      JSON.stringify(local.bankAccounts ?? null) !== JSON.stringify(nextBankAccounts ?? null) ||
-      JSON.stringify(local.notice ?? null) !== JSON.stringify(nextNotice ?? null) ||
-      JSON.stringify(local.activeAbono ?? null) !== JSON.stringify(nextActiveAbono ?? null);
-
-    if (changed) {
-      await db.tenants.put({
-        ...targetLocal,
-        appLocked: nextLocked,
-        unlockedByAdmin: nextUnlocked,
-        offlineBlocked: nextOfflineBlocked,
-        paymentBannerDeactivated: nextBannerDeactivated,
+      const targetLocal = local ?? ({
+        tenantId: session.tenantId,
+        name: remote.data.name || session.tenantName,
+        adminUid: session.userId,
+        status: remote.status,
         clientPortalEnabled: nextClientPortalEnabled,
         settingsModuleEnabled: nextSettingsModuleEnabled,
-        auditModuleEnabled: nextAuditModuleEnabled,
-        socioModuleEnabled: nextSocioModuleEnabled,
-        allowMultipleSessions: nextAllowMultipleSessions,
-        maxAdmins: nextMaxAdmins,
-        paymentWhatsAppPhone: nextWhatsApp,
-        bankAccounts: nextBankAccounts,
-        paymentBannerDismissible: nextPaymentDismissible,
-        paymentBannerExpiresAt: nextPaymentExpiresAt,
-        notice: nextNotice,
-        activeAbono: nextActiveAbono,
-        updatedAt: String(remote.data.updatedAt ?? targetLocal.updatedAt),
+        createdAt: String(remote.data.createdAt || todayStr()),
+        updatedAt: String(remote.data.updatedAt || todayStr()),
         syncStatus: 'SYNCED',
-      });
-      refreshSessionFlags();
+      } as Tenant);
+
+      const changed =
+        !local ||
+        local.appLocked !== nextLocked ||
+        local.unlockedByAdmin !== nextUnlocked ||
+        local.offlineBlocked !== nextOfflineBlocked ||
+        local.paymentBannerDeactivated !== nextBannerDeactivated ||
+        local.clientPortalEnabled !== nextClientPortalEnabled ||
+        local.settingsModuleEnabled !== nextSettingsModuleEnabled ||
+        local.auditModuleEnabled !== nextAuditModuleEnabled ||
+        local.socioModuleEnabled !== nextSocioModuleEnabled ||
+        local.allowMultipleSessions !== nextAllowMultipleSessions ||
+        local.maxAdmins !== nextMaxAdmins ||
+        local.paymentWhatsAppPhone !== nextWhatsApp ||
+        local.paymentBannerDismissible !== nextPaymentDismissible ||
+        local.paymentBannerExpiresAt !== nextPaymentExpiresAt ||
+        JSON.stringify(local.bankAccounts ?? null) !== JSON.stringify(nextBankAccounts ?? null) ||
+        JSON.stringify(local.notice ?? null) !== JSON.stringify(nextNotice ?? null) ||
+        JSON.stringify(local.activeAbono ?? null) !== JSON.stringify(nextActiveAbono ?? null);
+
+      if (changed) {
+        await db.tenants.put({
+          ...targetLocal,
+          appLocked: nextLocked,
+          unlockedByAdmin: nextUnlocked,
+          offlineBlocked: nextOfflineBlocked,
+          paymentBannerDeactivated: nextBannerDeactivated,
+          clientPortalEnabled: nextClientPortalEnabled,
+          settingsModuleEnabled: nextSettingsModuleEnabled,
+          auditModuleEnabled: nextAuditModuleEnabled,
+          socioModuleEnabled: nextSocioModuleEnabled,
+          allowMultipleSessions: nextAllowMultipleSessions,
+          maxAdmins: nextMaxAdmins,
+          paymentWhatsAppPhone: nextWhatsApp,
+          bankAccounts: nextBankAccounts,
+          paymentBannerDismissible: nextPaymentDismissible,
+          paymentBannerExpiresAt: nextPaymentExpiresAt,
+          notice: nextNotice,
+          activeAbono: nextActiveAbono,
+          updatedAt: String(remote.data.updatedAt ?? targetLocal.updatedAt),
+          syncStatus: 'SYNCED',
+        });
+        refreshSessionFlags();
+      }
+    } catch (err) {
+      console.warn('[Layout] Error en pollRemoteControl:', err);
     }
   }
 
   // Telemetría para edición offline, latidos y confirmación de purga si detecta red
   useEffect(() => {
     if (!online || !session?.tenantId) return;
+    let isCancelled = false;
     const runCheck = () => {
-      void checkOfflineTelemetry(session.tenantId).then((res) => {
-        if (res.wiped) {
-          logout();
-          toast('Los datos locales fueron purgados por el Super Administrador y respaldados en la nube.', 'error');
-          navigate('/login', { replace: true });
-        } else if (res.migrated) {
-          toast('¡Organización migrada a Modo Online con éxito!', 'success');
-          void runSync(session.tenantId);
-        } else if (res.locked) {
-          void refreshSessionFlags();
-        }
-      });
+      if (isCancelled || !navigator.onLine) return;
+      void checkOfflineTelemetry(session.tenantId)
+        .then((res) => {
+          if (isCancelled) return;
+          if (res.wiped) {
+            logout();
+            toast('Los datos locales fueron purgados por el Super Administrador y respaldados en la nube.', 'error');
+            navigate('/login', { replace: true });
+          } else if (res.migrated) {
+            toast('¡Organización migrada a Modo Online con éxito!', 'success');
+            void runSync(session.tenantId).catch(() => undefined);
+          } else if (res.locked) {
+            void refreshSessionFlags();
+          }
+        })
+        .catch((err) => {
+          console.warn('[Layout] Telemetría offline en desconexión:', err);
+        });
     };
     runCheck();
     const intervalId = window.setInterval(runCheck, 20000);
-    return () => window.clearInterval(intervalId);
+    return () => {
+      isCancelled = true;
+      window.clearInterval(intervalId);
+    };
   }, [online, session?.tenantId]);
 
   useEffect(() => {
@@ -775,7 +795,7 @@ export default function Layout() {
   }
 
   // Prevenir parpadeo o montaje de rutas durante F5 si el registro del tenant aún está cargando
-  if (session?.role === 'TENANT_ADMIN' && tenantRecord === undefined && !isCachedLocked) {
+  if (session?.role === 'TENANT_ADMIN' && tenantRecord === undefined && !isCachedLocked && !tenantLoadTimeout) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-950 text-slate-400">
         <Loader2 className="h-8 w-8 animate-spin text-emerald-500" />
@@ -1007,6 +1027,21 @@ export default function Layout() {
             </button>
           </div>
         </header>
+
+        {!online && (
+          <div className="flex items-center justify-between gap-3 bg-amber-500 px-4 py-2 text-xs font-semibold text-slate-950 shadow-xs border-b border-amber-600">
+            <div className="flex items-center gap-2">
+              <WifiOff size={15} className="shrink-0 animate-pulse text-slate-950" />
+              <span>
+                <strong>Modo sin conexión activo:</strong> Operando con la base de datos local de este dispositivo. Tus préstamos y cobros se guardan normalmente y se sincronizarán al recuperar la red.
+              </span>
+            </div>
+            <span className="hidden sm:inline-flex items-center gap-1 rounded-full bg-slate-900 px-2.5 py-0.5 text-[10px] font-bold text-amber-300 shrink-0">
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-ping" />
+              Local-First
+            </span>
+          </div>
+        )}
 
         {showMonthlyInvoiceBanner && (
           <div
